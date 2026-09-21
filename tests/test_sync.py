@@ -111,7 +111,7 @@ class TestSyncServiceWithMock(unittest.TestCase):
         mock_download.return_value = True
 
         mock_get_issue.return_value = {
-            "key": "DEMO-962",
+            "key": "DEMO-101",
             "fields": {
                 "summary": "Fix authentication crash on mobile",
                 "status": {"name": "In Progress"},
@@ -151,21 +151,21 @@ class TestSyncServiceWithMock(unittest.TestCase):
         }
 
         service = SyncService(self.config)
-        result = service.sync("DEMO-962")
+        result = service.sync("DEMO-101")
 
         self.assertTrue(result.success)
-        self.assertEqual(result.key, "DEMO-962")
+        self.assertEqual(result.key, "DEMO-101")
         self.assertEqual(result.assets_downloaded, 1)
 
         # Check that ticket.md and history.md were created
-        ticket_file = self.test_dir / "tickets" / "DEMO-962" / "ticket.md"
-        history_file = self.test_dir / "tickets" / "DEMO-962" / "history.md"
+        ticket_file = self.test_dir / "tickets" / "DEMO-101" / "ticket.md"
+        history_file = self.test_dir / "tickets" / "DEMO-101" / "history.md"
 
         self.assertTrue(ticket_file.exists())
         self.assertTrue(history_file.exists())
 
         ticket_content = ticket_file.read_text(encoding="utf-8")
-        self.assertIn("DEMO-962", ticket_content)
+        self.assertIn("DEMO-101", ticket_content)
         self.assertIn("Fix authentication crash on mobile", ticket_content)
         self.assertIn("App crashes when token expires.", ticket_content)
         self.assertIn("assets/crash-trace.png", ticket_content)
@@ -185,13 +185,13 @@ class TestSyncServiceWithMock(unittest.TestCase):
     @patch.object(JiraClient, "get_issue")
     def test_sync_key_from_url(self, mock_get_issue):
         mock_get_issue.return_value = {
-            "key": "DEMO-986",
+            "key": "DEMO-102",
             "fields": {"summary": "Analyze export preferences"},
             "changelog": {"histories": []},
         }
         service = SyncService(self.config)
-        result = service.sync("https://test.atlassian.net/browse/DEMO-986")
-        self.assertEqual(result.key, "DEMO-986")
+        result = service.sync("https://test.atlassian.net/browse/DEMO-102")
+        self.assertEqual(result.key, "DEMO-102")
 
 
 if __name__ == "__main__":

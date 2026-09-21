@@ -6,7 +6,7 @@ A modular, local Model Context Protocol (MCP) server and interactive CLI designe
 
 ## 💡 What This Project Does
 
-When an AI Agent is tasked with solving a Jira issue (e.g. `DEMO-962`), this tool:
+When an AI Agent is tasked with solving a Jira issue (e.g. `PROJ-123`), this tool:
 1. **Fetches complete ticket data** via Jira Cloud REST API v3 using an API token.
 2. **Converts description from ADF** (Atlassian Document Format) to clean, standard Markdown.
 3. **Extracts change history (Changelog)** chronologically into `history.md` so AI understands how requirements evolved.
@@ -84,7 +84,7 @@ python cli.py
 ```
 - **First run**: Prompts for your Jira URL (e.g. `https://your-domain.atlassian.net`), email, and API token, tests authentication and permissions, and saves to `.env`.
 - **Menu**:
-  - `[1] Sync Jira Ticket`: Enter a key (e.g. `DEMO-962` or full ticket URL) to download full context.
+  - `[1] Sync Jira Ticket`: Enter a key (e.g. `PROJ-123` or full ticket URL) to download full context.
   - `[2] List Synced Tickets`: View all locally indexed tickets.
   - `[3] Check / Switch Jira Account`: Re-verify credentials or change user.
   - `[4] Start MCP Server`: Run stdio MCP server directly.
@@ -136,7 +136,7 @@ python server.py
 ├── INDEX.md                     # Master table of all synced tickets
 ├── catalog.json                 # Machine-readable JSON catalog
 └── tickets/
-    └── DEMO-962/
+    └── PROJ-123/
         ├── ticket.md            # YAML frontmatter + description + image links
         ├── history.md           # Chronological changelog timeline
         └── assets/              # Local image files & UI screenshots

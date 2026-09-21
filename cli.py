@@ -185,7 +185,7 @@ def handle_sync_ticket() -> None:
     if not check_feature_permission("Sync Jira Ticket", "BROWSE_PROJECTS"):
         return
 
-    issue_key = input("\n👉 Enter Jira Ticket Key to sync (e.g. DEMO-962): ").strip().upper()
+    issue_key = input("\n👉 Enter Jira Ticket Key to sync (e.g. PROJ-123): ").strip().upper()
     if not issue_key:
         print("[!] Ticket key cannot be empty.")
         return

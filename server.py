@@ -40,7 +40,7 @@ def jira_sync_ticket(issue_key: str) -> str:
     """Synchronizes a Jira ticket (converts ADF description to Markdown, downloads image attachments, and extracts changelog history) into the local .ai-context/ directory for AI Agents.
 
     Args:
-        issue_key: Jira issue key, e.g. 'DEMO-962' or 'PROJECT-123'.
+        issue_key: Jira issue key, e.g. 'PROJ-123' or 'ISSUE-456'.
 
     Returns:
         Path to generated markdown file and synchronization summary.

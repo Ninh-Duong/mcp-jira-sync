@@ -179,7 +179,7 @@ class SyncService:
         # Extract ticket key even if user enters a full Jira URL (e.g. /browse/KEY-123)
         match = re.search(r"([A-Za-z0-9]+-[0-9]+)", issue_key)
         if not match:
-            msg = f"Invalid ticket key: '{issue_key}'. Expected format: PROJECT-123 (e.g. DEMO-962)."
+            msg = f"Invalid ticket key: '{issue_key}'. Expected format: PROJECT-123 (e.g. PROJ-123)."
             logger.warning(msg)
             return SyncResult(success=False, key=issue_key.strip(), message=msg)
         key = match.group(1).upper()
