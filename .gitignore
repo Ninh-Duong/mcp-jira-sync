@@ -1,0 +1,35 @@
+# Environment and secrets
+.env
+*.env
+.env.local
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.venv/
+env/
+venv/
+ENV/
+
+# Logs (Kept locally for AI Agent debugging, never pushed)
+logs/
+*.log
+
+# AI Context (Local Jira synced context, contains internal ticket data)
+.ai-context/
+
+# Testing and cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
