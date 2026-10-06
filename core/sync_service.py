@@ -232,6 +232,20 @@ class SyncService:
                 else:
                     other_files.append(att)
 
+            # Purge obsolete assets no longer present in Jira attachments
+            valid_asset_names = {
+                _sanitize_filename(att.get("filename", "asset"))
+                for att in attachments
+                if att.get("mimeType", "").lower() in IMAGE_MIME_TYPES
+            }
+            if assets_dir.exists():
+                for f in assets_dir.iterdir():
+                    if f.is_file() and f.name not in valid_asset_names:
+                        f.unlink()
+                        logger.info(f"Removed obsolete asset: {f.name}")
+                if not any(assets_dir.iterdir()):
+                    assets_dir.rmdir()
+
             # 5. Convert description ADF -> Markdown
             raw_desc = fields.get("description")
             desc_md = adf_to_markdown(raw_desc)

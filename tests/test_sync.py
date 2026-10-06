@@ -79,6 +79,29 @@ class TestAdfParser(unittest.TestCase):
         self.assertIn("| Col 1 | Col 2 |", rendered)
         self.assertIn("| Val A | Val B |", rendered)
 
+    def test_media_linking(self):
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "mediaSingle",
+                    "content": [
+                        {
+                            "type": "media",
+                            "attrs": {
+                                "id": "uuid-1234",
+                                "type": "file",
+                                "collection": "",
+                                "alt": "screenshot.png",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        rendered = adf_to_markdown(adf)
+        self.assertEqual(rendered, "![screenshot.png](assets/screenshot.png)")
+
 
 class TestSyncServiceWithMock(unittest.TestCase):
     def setUp(self):
@@ -174,6 +197,50 @@ class TestSyncServiceWithMock(unittest.TestCase):
         self.assertIn("Alex Taylor", history_content)
         self.assertIn("`Open` ➔ `In Progress`", history_content)
 
+    @patch("core.sync_service.TICKETS_DIR")
+    @patch("core.indexer.INDEX_FILE")
+    @patch("core.indexer.CATALOG_FILE")
+    @patch.object(JiraClient, "get_issue")
+    @patch.object(JiraClient, "download_attachment")
+    def test_sync_purges_obsolete_assets(
+        self, mock_download, mock_get_issue, mock_catalog_file, mock_index_file, mock_tickets_dir
+    ):
+        mock_tickets_dir.__truediv__.side_effect = lambda key: self.test_dir / "tickets" / key
+        mock_index_file.parent = self.test_dir
+        mock_index_file.write_text = MagicMock()
+        mock_catalog_file.parent = self.test_dir
+        mock_catalog_file.exists.return_value = False
+        mock_catalog_file.write_text = MagicMock()
+        mock_download.side_effect = lambda url, dest: dest.write_text("new content") or True
+
+        # Pre-populate assets dir with an obsolete asset
+        assets_dir = self.test_dir / "tickets" / "DEMO-101" / "assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        old_file = assets_dir / "obsolete-photo.png"
+        old_file.write_text("old content")
+
+        mock_get_issue.return_value = {
+            "key": "DEMO-101",
+            "fields": {
+                "summary": "Sample issue",
+                "attachment": [
+                    {
+                        "filename": "new-photo.png",
+                        "mimeType": "image/png",
+                        "content": "https://test.atlassian.net/att/1",
+                    }
+                ],
+            },
+            "changelog": {"histories": []},
+        }
+
+        service = SyncService(self.config)
+        result = service.sync("DEMO-101")
+
+        self.assertTrue(result.success)
+        self.assertFalse(old_file.exists(), "Obsolete asset should be purged")
+        self.assertTrue((assets_dir / "new-photo.png").exists(), "Active asset should exist")
+
     @patch.object(JiraClient, "get_issue")
     def test_sync_error_handling(self, mock_get_issue):
         mock_get_issue.side_effect = JiraApiError(404, "Ticket not found")
@@ -182,8 +249,18 @@ class TestSyncServiceWithMock(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Ticket not found", result.message)
 
+    @patch("core.sync_service.TICKETS_DIR")
+    @patch("core.indexer.INDEX_FILE")
+    @patch("core.indexer.CATALOG_FILE")
     @patch.object(JiraClient, "get_issue")
-    def test_sync_key_from_url(self, mock_get_issue):
+    def test_sync_key_from_url(self, mock_get_issue, mock_catalog_file, mock_index_file, mock_tickets_dir):
+        mock_tickets_dir.__truediv__.side_effect = lambda key: self.test_dir / "tickets" / key
+        mock_index_file.parent = self.test_dir
+        mock_index_file.write_text = MagicMock()
+        mock_catalog_file.parent = self.test_dir
+        mock_catalog_file.exists.return_value = False
+        mock_catalog_file.write_text = MagicMock()
+
         mock_get_issue.return_value = {
             "key": "DEMO-102",
             "fields": {"summary": "Analyze export preferences"},

@@ -104,6 +104,8 @@ def _render_node(node: Dict[str, Any], indent_level: int = 0) -> str:
     if n_type == "media":
         alt = attrs.get("alt", "image")
         m_id = attrs.get("id", "attachment")
+        if alt and any(alt.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")):
+            return f"![{alt}](assets/{alt})"
         return f"![{alt}]({m_id})"
 
     if n_type == "table":
