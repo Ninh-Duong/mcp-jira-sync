@@ -14,7 +14,7 @@ Writers: `SyncService.sync` ([core/sync_service.py](../core/sync_service.py)) an
 2. `AI_CONTEXT_DIR` in this repo's `.env`, else
 3. `<repo>/.ai-context`.
 
-`~` is expanded and the path is made absolute. Tools always return absolute POSIX paths (forward slashes, also on Windows). Put it inside the agent's workspace (e.g. `<WORKSPACE>/.ai-context`) when the agent's file tools are limited to that workspace, and add it to that repo's `.gitignore` (ticket data is internal).
+`~` is expanded and the path is made absolute. Tools always return absolute paths with forward slashes (also on Windows). Put it inside the agent's workspace (e.g. `<WORKSPACE>/.ai-context`) when the agent's file tools are limited to that workspace, and add it to that repo's `.gitignore` (ticket data is internal).
 
 ## 2. Tree
 

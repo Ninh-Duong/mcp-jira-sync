@@ -1,6 +1,6 @@
 # Parent MCP / Hub Integration Guide
 
-How a hub (master/router MCP) consumes `jira_sync_ticket` as a child feature. The patterns are the usual ones for MCP hubs.
+How a hub (master/router MCP) consumes `jira_sync_ticket` as a child feature. The patterns (subprocess, in-process mount with a prefix, server instructions) are the usual ones for MCP hubs, so other children can follow the same contract.
 
 | Pattern | Use when | Isolation | Prefixing |
 |---|---|---|---|

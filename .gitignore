@@ -1,7 +1,19 @@
-# Environment and secrets
+# Environment and secrets (public repo: see docs/SECURITY.md)
 .env
 *.env
 .env.local
+*secrets*.json
+central*.json
+*.bak
+
+# Local denylist of employer/project terms read by TestPublicRepoHygiene (must never be pushed)
+.private-terms
+
+# Project-scope AI client configs (hold absolute local paths and sometimes tokens)
+.mcp.json
+.cursor/
+.agents/
+.claude/
 
 # Python runtime artifacts
 __pycache__/

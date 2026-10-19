@@ -33,3 +33,5 @@ From the 2026-10-20 review. Not fixed yet, in rough priority order. Before fixin
 | B10 | Low | `server.py` packaging | Top-level module names `server`, `core`, `utils` collide with other Python children mounted in one hub process | move into a package (`jira_sync_ticket/`) when in-process mounting is actually used |
 | B11 | Low | `jira_list_synced` | No filters; returns every ticket | add `status`/`label` filters only when an agent needs them (FEATURES.md first) |
 | B12 | Low | catalog | Tickets deleted in Jira stay in the catalog forever | a "prune" action if it ever matters |
+| B13 | Low (security) | `JiraClient.download_attachment` | Basic auth goes to whatever host the attachment `content` URL names (in practice always the tenant; httpx drops auth on cross-origin redirects) | send `Authorization` only when the host is the tenant or `api.atlassian.com` |
+| B14 | Low (security) | `_sanitize_filename` | `.` and `..` pass through; the write then fails safely (caught), but the image is lost | map them to `_` |

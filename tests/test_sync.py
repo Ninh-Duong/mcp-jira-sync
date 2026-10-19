@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -283,7 +285,7 @@ class TestContracts(unittest.TestCase):
     def test_frontmatter_is_valid_and_complete(self):
         meta = {
             "key": "DEMO-1",
-            "summary": 'Fix "login": C:\\temp path',
+            "summary": 'Fix "login": a\\b path',
             "status": "To Do: Review",
             "type": "Bug",
             "priority": "High",
@@ -360,6 +362,66 @@ class TestContracts(unittest.TestCase):
         self.assertFalse(hints["x_jira_sync_ticket"]["readOnlyHint"])
         self.assertTrue(hints["x_jira_list_synced"]["readOnlyHint"])
         self.assertIn("x_jira_sync_ticket", server.jira_instructions("x_"))
+
+
+class TestPublicRepoHygiene(unittest.TestCase):
+    """This repo is public: no file that would be committed may hold local paths or private data. See docs/SECURITY.md."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    ALLOWED_EMAIL_DOMAINS = {"example.com", "users.noreply.github.com"}
+    ALLOWED_TENANTS = {"your-domain", "test", "x", "team-2", "dotenv"}
+    CHECKS = {
+        "local drive path": re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]+[A-Za-z0-9_]"),
+        "local home path": re.compile(r"/(?:Users|home)/[A-Za-z0-9_.-]+"),
+        "email": re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)"),
+        "jira tenant": re.compile(r"([\w-]+)\.atlassian\.net"),
+        "atlassian token": re.compile(r"\bAT(?:ATT|CTT)[A-Za-z0-9_=-]{20,}"),
+    }
+
+    def _publishable_files(self):
+        """Tracked files plus untracked ones git would add (not ignored)."""
+        try:
+            out = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=self.ROOT, capture_output=True, text=True, check=True,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git is not available")
+        for rel in out.splitlines():
+            path = self.ROOT / rel
+            try:
+                yield rel, path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # deleted in the working tree, or binary
+
+    def _private_terms(self):
+        """Employer/project terms kept only in the git-ignored .private-terms file, one regex per line."""
+        path = self.ROOT / ".private-terms"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [re.compile(line, re.I) for line in lines if line.strip() and not line.startswith("#")]
+
+    def _allowed(self, name, match):
+        if name == "email":
+            return match.group(1).lower() in self.ALLOWED_EMAIL_DOMAINS
+        if name == "jira tenant":
+            return match.group(1).lower() in self.ALLOWED_TENANTS
+        return False
+
+    def test_no_local_paths_or_private_data(self):
+        private = self._private_terms()
+        problems = []
+        for rel, text in self._publishable_files():
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for name, pattern in self.CHECKS.items():
+                    for m in pattern.finditer(line):
+                        if not self._allowed(name, m):
+                            problems.append(f"{rel}:{lineno}: {name}: {m.group(0)}")
+                for pattern in private:
+                    if pattern.search(line):
+                        problems.append(f"{rel}:{lineno}: private term (see .private-terms)")
+        self.assertEqual(problems, [], "Use placeholders from docs/SECURITY.md:\n" + "\n".join(problems))
 
 
 if __name__ == "__main__":
