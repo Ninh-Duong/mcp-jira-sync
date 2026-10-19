@@ -1,154 +1,107 @@
 # Jira Ticket Sync for AI Agents (`jira_sync_ticket`)
 
-A modular, local Model Context Protocol (MCP) server and interactive CLI designed to synchronize Jira tickets into structured Markdown documents and local image assets for AI Agents (such as Cursor, Claude Desktop, Antigravity, and Windsurf).
+A local MCP server and interactive CLI that turns a Jira Cloud ticket into Markdown + images an AI agent can read: description (ADF → Markdown), screenshots, change history, and related issues. Read-only on Jira. Built to run standalone or as a child of an MCP hub.
 
----
-
-## 💡 What This Project Does
-
-When an AI Agent is tasked with solving a Jira issue (e.g. `PROJ-123`), this tool:
-1. **Fetches complete ticket data** via Jira Cloud REST API v3 using an API token.
-2. **Converts description from ADF** (Atlassian Document Format) to clean, standard Markdown.
-3. **Extracts change history (Changelog)** chronologically into `history.md` so AI understands how requirements evolved.
-4. **Downloads attached screenshots & diagrams** into `.ai-context/tickets/<KEY>/assets/`.
-5. **Generates machine-readable context** (`ticket.md` with YAML frontmatter).
-6. **Maintains a global catalog** (`.ai-context/INDEX.md` and `catalog.json`) for multi-agent discovery.
-
----
-
-## 📁 Repository Structure
+When an agent works on `PROJ-123`, one call to `jira_sync_ticket` produces:
 
 ```
-jira_sync_ticket/
-├── .env.example          # Environment template
-├── .env                  # Local credentials (git-ignored)
-├── .gitignore            # Ignores .env, logs/, .ai-context/, and virtualenv
-├── requirements.txt      # Minimal dependencies (mcp, httpx, python-dotenv)
-├── pyproject.toml        # Standard Python packaging
-├── README.md             # Project documentation
-├── rules.md              # AI Agent architectural rules & constraints
-├── logs/                 # Runtime logs for AI debugging (git-ignored)
-│   └── app.log           # Rotating log file with function names & stack traces
-├── core/
-│   ├── config.py         # 100% relative path resolution & settings
-│   ├── adf_parser.py     # Recursive ADF to Markdown converter
-│   ├── jira_client.py    # Jira REST API client & asset downloader
-│   ├── sync_service.py   # Core synchronization pipeline
-│   └── indexer.py        # INDEX.md and catalog.json generator
-├── utils/
-│   ├── env_check.py      # Pre-flight runtime and dependency check
-│   └── logger.py         # Dual console & rotating file logger
-├── cli.py                # Interactive CLI menu & login flow
-└── server.py             # Local MCP Server (stdio transport for AI Agents)
+<AI_CONTEXT_DIR>/                   # default <repo>/.ai-context, movable into the agent's workspace
+├── INDEX.md                        # table of all synced tickets
+├── catalog.json                    # machine-readable catalog
+└── tickets/PROJ-123/
+    ├── ticket.md                   # YAML frontmatter + description + images + relations
+    ├── history.md                  # changelog, newest first
+    └── assets/                     # downloaded images
 ```
+
+Format contract: [docs/AI_CONTEXT_FORMAT.md](docs/AI_CONTEXT_FORMAT.md).
 
 ---
 
-## 🚀 Quick Setup
+## Quick start
 
-### 1. Requirements
-- Python **3.10+** (Tested on Windows, macOS, Linux).
+Requires Python **3.10+** (Windows, macOS, Linux).
 
-### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
+python utils/env_check.py          # pre-flight: Python + dependencies
+python cli.py                      # log in once (saves .env), then use the menu
 ```
 
-Verify environment readiness:
-```bash
-python utils/env_check.py
-```
+Token: https://id.atlassian.com/manage-profile/security/api-tokens. Permissions and scopes: [docs/JIRA_ACCESS.md](docs/JIRA_ACCESS.md).
 
-### 3. Required Jira Permissions & Scopes (Latest Atlassian Standard)
-When using a **Personal API Token** (Basic Auth), the token automatically inherits the permissions of your Atlassian user. Ensure your user has:
-- **Project Permission Key**:
-  - `BROWSE_PROJECTS`: Ability to browse projects, search issues, and view issue details.
+### CLI
 
-When using an **OAuth 2.0 / Atlassian App Token**, ensure the following **Granular Scopes** are granted:
-- `read:me`: Read current user profile (`/rest/api/3/myself`)
-- `read:jira-work`: Read project metadata and permission validation (classic scope covering all issue reads)
-- `read:issue-details:jira`: Read ticket description, summary, and fields
-- `read:attachment:jira`: Access and download attached images and screenshots
-- `read:issue.changelog:jira`: Read ticket changelog and requirement edit history (NOT `read:audit-log:jira`)
+On start the CLI verifies the saved credentials (or asks for URL, email, and token), audits `BROWSE_PROJECTS`, then shows:
 
-Generate your Personal API Token at: [Atlassian Security API Tokens](https://id.atlassian.net/manage-profile/security/api-tokens)
+| Menu | Action |
+|---|---|
+| `[1]` Sync Jira Ticket | key (`PROJ-123`) or ticket URL → files above |
+| `[2]` List Synced Tickets | local catalog, no Jira call |
+| `[3]` Check / Switch Jira Account | re-verify, or log in as someone else |
+| `[4]` Start MCP Server | runs the stdio server in this terminal (normally the AI client starts it) |
+| `[0]` Exit | |
 
----
+### MCP server
 
-## 🖥️ Usage
-
-### Option A: Interactive CLI
-Run the CLI:
-```bash
-python cli.py
-```
-- **First run**: Prompts for your Jira URL (e.g. `https://your-domain.atlassian.net`), email, and API token, tests authentication and permissions, and saves to `.env`.
-- **Menu**:
-  - `[1] Sync Jira Ticket`: Enter a key (e.g. `PROJ-123` or full ticket URL) to download full context.
-  - `[2] List Synced Tickets`: View all locally indexed tickets.
-  - `[3] Check / Switch Jira Account`: Re-verify credentials or change user.
-  - `[4] Start MCP Server`: Run stdio MCP server directly.
-  - `[0] Exit`.
-
-### Option B: Local MCP Server for AI Agents
-Run the server:
-```bash
-python server.py
-```
-
-#### Client Configuration (e.g., Claude Desktop, Cursor, Antigravity)
-
-**In Claude Desktop (`claude_desktop_config.json`)**:
-```json
-{
-  "mcpServers": {
-    "jira-sync-ticket": {
-      "command": "python",
-      "args": ["/absolute/path/to/jira_sync_ticket/server.py"]
-    }
-  }
-}
-```
-
-**In Cursor (`.cursor/mcp.json`)**:
 ```json
 {
   "mcpServers": {
     "jira-sync": {
       "command": "python",
-      "args": ["server.py"]
+      "args": ["/absolute/path/to/jira_sync_ticket/server.py"],
+      "env": { "AI_CONTEXT_DIR": "/absolute/path/to/your-workspace/.ai-context" }
     }
   }
 }
 ```
 
-#### Exposed MCP Tools:
-- `jira_sync_ticket(issue_key)`: Synchronizes ticket, downloads images, and returns Markdown path.
-- `jira_list_synced()`: Returns summary of all tickets in local index.
-- `jira_check_connection()`: Validates Jira API connectivity.
+Per-client steps (Claude Code, Claude Desktop, Cursor, VS Code, Antigravity, Codex): [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md). Easiest: give that file to your agent.
+
+| Tool | Does |
+|---|---|
+| `jira_sync_ticket(issue_key)` | syncs the ticket, returns absolute paths of `ticket.md` / `history.md` |
+| `jira_list_synced()` | lists synced tickets with absolute paths (offline) |
+| `jira_check_connection()` | checks credentials and shows the user |
+
+Example result:
+```
+✅ Ticket PROJ-123 synchronized successfully!
+- Ticket Details & Description : <WORKSPACE>/.ai-context/tickets/PROJ-123/ticket.md
+- Changelog & Evolution History : <WORKSPACE>/.ai-context/tickets/PROJ-123/history.md
+- Downloaded Images/Diagrams    : 2 image(s)
+- Master Catalog Index          : <WORKSPACE>/.ai-context/INDEX.md
+```
+
+### Inside an MCP hub
+
+Spawn `python server.py` as a stdio child and inject `JIRA_*` / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR`, or mount it in a Python hub with `register_jira_tools(app)`. See [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md).
 
 ---
 
-## 🗄️ Output Data Format (`.ai-context/`)
+## Debugging
 
-```
-.ai-context/
-├── INDEX.md                     # Master table of all synced tickets
-├── catalog.json                 # Machine-readable JSON catalog
-└── tickets/
-    └── PROJ-123/
-        ├── ticket.md            # YAML frontmatter + description + image links
-        ├── history.md           # Chronological changelog timeline
-        └── assets/              # Local image files & UI screenshots
-            └── screenshot.png
+Everything (requests, file writes, tracebacks with `file:line in function`) goes to `logs/app.log`, rotating, git-ignored. Common errors: [docs/JIRA_ACCESS.md §5](docs/JIRA_ACCESS.md#5-troubleshooting).
+
+## Development
+
+```bash
+python -m unittest discover tests  # offline, < 2 s
 ```
 
----
+Rules for every change (human or agent) are in [AGENTS.md](AGENTS.md), and docs move with the code.
 
-## 🩺 Debugging for AI Agents
+## Documentation
 
-All operational details, API requests, and exception tracebacks are logged to:
-```
-logs/app.log
-```
-If a sync fails, AI Agents can inspect `logs/app.log` to view the exact line number, request URL, and error traceback to diagnose and resolve issues immediately.
+| Doc | For |
+|---|---|
+| [AGENTS.md](AGENTS.md) | **Start here when changing code**: rules, code map, tool reference, anti-drift rule |
+| [docs/FEATURES.md](docs/FEATURES.md) | What each feature does and does not do (the spec) |
+| [docs/AI_CONTEXT_FORMAT.md](docs/AI_CONTEXT_FORMAT.md) | Output contract: `ticket.md`, `history.md`, `catalog.json` |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modules, sync pipeline, Jira endpoint strategy |
+| [docs/STANDARDS.md](docs/STANDARDS.md) | Coding, MCP tool, error, logging, and test standards |
+| [docs/JIRA_ACCESS.md](docs/JIRA_ACCESS.md) | Tokens, permissions, config priority, env variables |
+| [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md) | Agent-executable client setup |
+| [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md) | Hub integration (subprocess, in-process, programmatic) |
+| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | Why each dependency exists, what is excluded |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | Known issues and limits |

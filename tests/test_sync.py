@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -6,10 +8,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.adf_parser import adf_to_markdown
-from core.config import JiraConfig
+import core.config as config_module
+from core.config import JiraConfig, load_config
 from core.indexer import register_ticket, list_indexed_tickets, _read_catalog
 from core.jira_client import JiraClient, JiraApiError
-from core.sync_service import SyncService
+from core.sync_service import FRONTMATTER_KEYS, SyncService, _format_ticket_markdown, extract_issue_key
 
 
 class TestAdfParser(unittest.TestCase):
@@ -112,6 +115,9 @@ class TestSyncServiceWithMock(unittest.TestCase):
             api_token="dummy-token",
             max_asset_size_mb=5,
         )
+        # JiraClient resolves cloudId over HTTP in __init__; tests never touch the network
+        patch.object(JiraClient, "_resolve_cloud_id", return_value=None).start()
+        self.addCleanup(patch.stopall)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -269,6 +275,91 @@ class TestSyncServiceWithMock(unittest.TestCase):
         service = SyncService(self.config)
         result = service.sync("https://test.atlassian.net/browse/DEMO-102")
         self.assertEqual(result.key, "DEMO-102")
+
+
+class TestContracts(unittest.TestCase):
+    """Locks the contracts documented in docs/AI_CONTEXT_FORMAT.md, docs/JIRA_ACCESS.md and AGENTS.md."""
+
+    def test_frontmatter_is_valid_and_complete(self):
+        meta = {
+            "key": "DEMO-1",
+            "summary": 'Fix "login": C:\\temp path',
+            "status": "To Do: Review",
+            "type": "Bug",
+            "priority": "High",
+            "assignee": "Alex",
+            "reporter": "Sam",
+            "created": "2026-09-01T08:00:00Z",
+            "updated": "2026-09-02T08:00:00Z",
+            "url": "https://x.atlassian.net/browse/DEMO-1",
+            "labels": ["a", "b"],
+        }
+        md = _format_ticket_markdown(meta, "desc", [{"filename": "a.png", "mime": "image/png"}], [], {})
+        lines = md.split("\n")
+        self.assertEqual(lines[0], "---")
+        block = lines[1:lines.index("---", 1)]
+        parsed = {k: json.loads(v) for k, v in (line.split(": ", 1) for line in block)}
+        self.assertEqual(tuple(parsed), FRONTMATTER_KEYS)  # keep in sync with docs/AI_CONTEXT_FORMAT.md
+        self.assertEqual(parsed["summary"], meta["summary"])
+        self.assertEqual(parsed["labels"], ["a", "b"])
+        self.assertEqual(parsed["assets_count"], 1)
+
+    def test_issue_key_extraction(self):
+        self.assertEqual(extract_issue_key("abc-12"), "ABC-12")
+        self.assertEqual(extract_issue_key(" MY_PROJ-1 "), "MY_PROJ-1")
+        self.assertEqual(extract_issue_key("https://team-2.atlassian.net/browse/ABC-5"), "ABC-5")
+        self.assertEqual(
+            extract_issue_key("https://team-2.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-7"),
+            "ABC-7",
+        )
+        self.assertIsNone(extract_issue_key("https://team-2.atlassian.net/"))
+        self.assertIsNone(extract_issue_key("hello"))
+
+    def test_config_priority_env_then_central_then_dotenv(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = tmp / ".env"
+        env_file.write_text(
+            "JIRA_BASE_URL=https://dotenv.atlassian.net\nJIRA_EMAIL=dotenv@x\nJIRA_API_TOKEN=dotenv-token\n",
+            encoding="utf-8",
+        )
+        central = tmp / "central.json"
+        central.write_text(json.dumps({"jira": {"email": "central@x", "api_token": "central-token"}}), encoding="utf-8")
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("JIRA_") and k != "CENTRAL_CONFIG_PATH"}
+        clean.update({"CENTRAL_CONFIG_PATH": str(central), "JIRA_API_TOKEN": "env-token"})
+        with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, clean, clear=True):
+            cfg = load_config()
+        self.assertEqual(cfg.api_token, "env-token")  # process env wins
+        self.assertEqual(cfg.email, "central@x")  # central beats .env
+        self.assertEqual(cfg.base_url, "https://dotenv.atlassian.net")  # .env is the fallback
+
+    def test_save_config_keeps_other_env_lines(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = tmp / ".env"
+        env_file.write_text("AI_CONTEXT_DIR=<WORKSPACE>/.ai-context\n", encoding="utf-8")
+        with patch.object(config_module, "ENV_FILE", env_file):
+            config_module.save_config("https://x.atlassian.net/", "e@x", "tok")
+            values = config_module._local_env()
+        self.assertEqual(values["AI_CONTEXT_DIR"], "<WORKSPACE>/.ai-context")
+        self.assertEqual(values["JIRA_BASE_URL"], "https://x.atlassian.net")
+        self.assertEqual(values["JIRA_API_TOKEN"], "tok")
+
+    def test_tools_mount_with_prefix(self):
+        import server  # must not exit or start anything on import
+
+        try:
+            from mcp.server import MCPServer
+        except ImportError:
+            from mcp.server.fastmcp import FastMCP as MCPServer
+        app = MCPServer("parent")
+        server.register_jira_tools(app, prefix="x_")
+        tools = {t.name: t for t in asyncio.run(app.list_tools())}
+        self.assertEqual(set(tools), {"x_jira_sync_ticket", "x_jira_list_synced", "x_jira_check_connection"})
+        hints = {name: t.annotations.model_dump(by_alias=True) for name, t in tools.items()}  # camelCase in mcp 1.x and 2.x
+        self.assertFalse(hints["x_jira_sync_ticket"]["readOnlyHint"])
+        self.assertTrue(hints["x_jira_list_synced"]["readOnlyHint"])
+        self.assertIn("x_jira_sync_ticket", server.jira_instructions("x_"))
 
 
 if __name__ == "__main__":

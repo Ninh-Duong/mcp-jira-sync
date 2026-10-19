@@ -18,6 +18,8 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
         return logger
 
     logger.setLevel(logging.DEBUG)
+    # The MCP SDK adds a root stderr handler; without this every line would print twice
+    logger.propagate = False
 
     # Ensure logs/ directory exists
     LOGS_DIR.mkdir(parents=True, exist_ok=True)

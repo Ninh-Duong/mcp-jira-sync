@@ -43,14 +43,16 @@ def verify_environment(exit_on_error: bool = False) -> bool:
     all_deps_ok = all(ok for _, ok, _ in dep_results)
 
     if not py_ok or not all_deps_ok:
-        print("\n[PRE-FLIGHT CHECK FAILED] Environment is not ready:")
+        # stderr: stdout is reserved for JSON-RPC when this runs inside the MCP server
+        err = sys.stderr
+        print("\n[PRE-FLIGHT CHECK FAILED] Environment is not ready:", file=err)
         if not py_ok:
-            print(f"  - {py_msg}")
+            print(f"  - {py_msg}", file=err)
         for pkg, ok, status in dep_results:
             if not ok:
-                print(f"  - Missing package: {pkg} ({status})")
-        print("\nResolution: Run the following command in terminal:")
-        print("  pip install -r requirements.txt\n")
+                print(f"  - Missing package: {pkg} ({status})", file=err)
+        print("\nResolution: Run the following command in terminal:", file=err)
+        print("  pip install -r requirements.txt\n", file=err)
 
         if exit_on_error:
             sys.exit(1)

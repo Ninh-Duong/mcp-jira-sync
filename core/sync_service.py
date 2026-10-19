@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,13 @@ IMAGE_MIME_TYPES = {
 }
 
 
+# ticket.md frontmatter keys, in order. Contract: docs/AI_CONTEXT_FORMAT.md
+FRONTMATTER_KEYS = (
+    "key", "summary", "status", "type", "priority", "assignee", "reporter",
+    "created", "updated", "url", "labels", "assets_count",
+)
+
+
 @dataclass
 class SyncResult:
     success: bool
@@ -30,6 +38,22 @@ class SyncResult:
     history_file: Optional[Path] = None
     assets_downloaded: int = 0
     message: str = ""
+
+
+# Jira project keys start with a letter and may contain letters, digits and underscores
+_KEY = r"[A-Za-z][A-Za-z0-9_]*-[0-9]+"
+
+
+def extract_issue_key(text: str) -> Optional[str]:
+    """Returns the upper-cased issue key from a bare key or a Jira URL (/browse/KEY or ?selectedIssue=KEY), else None.
+
+    Only those URL positions are searched, so a hostname like team-2.atlassian.net is never taken for a key.
+    """
+    text = text.strip()
+    match = re.fullmatch(_KEY, text) or re.search(rf"(?:/browse/|selectedIssue=)({_KEY})", text)
+    if not match:
+        return None
+    return (match.group(1) if match.groups() else match.group(0)).upper()
 
 
 def _sanitize_filename(name: str) -> str:
@@ -84,17 +108,8 @@ def _format_ticket_markdown(
     # Build YAML frontmatter for machine reading
     frontmatter = [
         "---",
-        f"key: {meta['key']}",
-        f'summary: "{meta["summary"].replace('"', '\\"')}"',
-        f"status: {meta['status']}",
-        f"type: {meta['type']}",
-        f"priority: {meta['priority']}",
-        f"assignee: {meta['assignee']}",
-        f"reporter: {meta['reporter']}",
-        f"created: {meta['created']}",
-        f"updated: {meta['updated']}",
-        f"url: {meta['url']}",
-        f"labels: {meta['labels']}",
+        # JSON scalars are valid YAML (double-quoted strings, flow lists), so every value parses safely
+        *(f"{k}: {json.dumps(meta[k], ensure_ascii=False)}" for k in FRONTMATTER_KEYS[:-1]),
         f"assets_count: {len(images)}",
         "---",
         "",
@@ -176,13 +191,11 @@ class SyncService:
 
     def sync(self, issue_key: str) -> SyncResult:
         """Executes full synchronization for a specific Jira issue."""
-        # Extract ticket key even if user enters a full Jira URL (e.g. /browse/KEY-123)
-        match = re.search(r"([A-Za-z0-9]+-[0-9]+)", issue_key)
-        if not match:
-            msg = f"Invalid ticket key: '{issue_key}'. Expected format: PROJECT-123 (e.g. PROJ-123)."
+        key = extract_issue_key(issue_key)
+        if not key:
+            msg = f"Invalid ticket key: '{issue_key}'. Expected PROJECT-123 or a Jira /browse/PROJECT-123 URL."
             logger.warning(msg)
             return SyncResult(success=False, key=issue_key.strip(), message=msg)
-        key = match.group(1).upper()
 
         if not self.config.is_configured:
             msg = "Jira account not configured. Please set up credentials via CLI or .env file."
