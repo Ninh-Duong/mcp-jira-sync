@@ -327,13 +327,32 @@ class TestContracts(unittest.TestCase):
         )
         central = tmp / "central.json"
         central.write_text(json.dumps({"jira": {"email": "central@x", "api_token": "central-token"}}), encoding="utf-8")
-        clean = {k: v for k, v in os.environ.items() if not k.startswith("JIRA_") and k != "CENTRAL_CONFIG_PATH"}
+        clean = self._env_without_jira()
         clean.update({"CENTRAL_CONFIG_PATH": str(central), "JIRA_API_TOKEN": "env-token"})
         with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, clean, clear=True):
             cfg = load_config()
         self.assertEqual(cfg.api_token, "env-token")  # process env wins
         self.assertEqual(cfg.email, "central@x")  # central beats .env
         self.assertEqual(cfg.base_url, "https://dotenv.atlassian.net")  # .env is the fallback
+
+    @staticmethod
+    def _env_without_jira():
+        skip = {"CENTRAL_CONFIG_PATH", "PYTHON_DOTENV_DISABLED"}
+        return {k: v for k, v in os.environ.items() if not k.startswith("JIRA_") and k not in skip}
+
+    def test_dotenv_ignored_when_disabled_by_hub(self):
+        # mcp-hub launches the child with PYTHON_DOTENV_DISABLED=1: the standalone .env must not leak into hub runs
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = tmp / ".env"
+        env_file.write_text("JIRA_EMAIL=dotenv@x\nAI_CONTEXT_DIR=<WORKSPACE>/.ai-context\n", encoding="utf-8")
+        for flag in ("1", "True", "yes"):
+            env = {**self._env_without_jira(), "PYTHON_DOTENV_DISABLED": flag}
+            with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, env, clear=True):
+                self.assertEqual(config_module._local_env(), {})
+                self.assertEqual(load_config().email, "")
+        with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, self._env_without_jira(), clear=True):
+            self.assertEqual(load_config().email, "dotenv@x")  # standalone: .env still read
 
     def test_save_config_keeps_other_env_lines(self):
         tmp = Path(tempfile.mkdtemp())

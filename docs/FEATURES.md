@@ -76,7 +76,7 @@ Non-goals: no multi-account switching inside the MCP server, no keychain storage
 
 | | |
 |---|---|
-| Entry points | `python server.py` · CLI menu `[4]` · `jira-sync-mcp` script · `register_jira_tools(app, prefix)` |
+| Entry points | `python server.py` · CLI menu `[4]` · `mcp-jira-sync` script · `register_jira_tools(app, prefix)` |
 | Tests | `TestContracts.test_tools_mount_with_prefix` |
 
 Rules: stdio transport; sends `jira_instructions()` on connect; 3 tools with annotations ([AGENTS.md §4](../AGENTS.md#4-mcp-tools-reference)); importing `server` has no side effects besides logger setup; nothing is written to stdout except JSON-RPC. Works with mcp 1.x (`FastMCP`) and 2.x (`MCPServer`).

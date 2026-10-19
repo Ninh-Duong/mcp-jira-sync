@@ -30,7 +30,7 @@ From the 2026-10-20 review. Not fixed yet, in rough priority order. Before fixin
 | B7 | Medium | `download_attachment` | Uses the attachment `content` URL on the tenant domain; scoped tokens (gateway-only) may get 401 | when `api_url` is the gateway, use `{api_url}/rest/api/3/attachment/content/{id}` |
 | B8 | Low | `sync_service` attachments | Two attachments with the same filename overwrite each other | suffix with attachment id on collision |
 | B9 | Low | `JiraClient.__init__` | Network call (`tenant_info`) on every construction, i.e. every tool call | resolve lazily, or cache per base URL |
-| B10 | Low | `server.py` packaging | Top-level module names `server`, `core`, `utils` collide with other Python children mounted in one hub process | move into a package (`jira_sync_ticket/`) when in-process mounting is actually used |
+| B10 | Low | `server.py` packaging | Top-level module names `server`, `core`, `utils` collide with other Python children mounted in one hub process | move into a package (`mcp_jira_sync/`) when in-process mounting is actually used |
 | B11 | Low | `jira_list_synced` | No filters; returns every ticket | add `status`/`label` filters only when an agent needs them (FEATURES.md first) |
 | B12 | Low | catalog | Tickets deleted in Jira stay in the catalog forever | a "prune" action if it ever matters |
 | B13 | Low (security) | `JiraClient.download_attachment` | Basic auth goes to whatever host the attachment `content` URL names (in practice always the tenant; httpx drops auth on cross-origin redirects) | send `Authorization` only when the host is the tenant or `api.atlassian.com` |

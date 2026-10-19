@@ -30,7 +30,7 @@ server_logger = get_logger("mcp_server")
 def jira_instructions(prefix: str = "") -> str:
     """MCP server instructions: the only guidance an agent in another repository gets. Keep in sync with AGENTS.md."""
     return (
-        "jira-sync-ticket: sync Jira Cloud tickets into local Markdown context for AI agents.\n"
+        "mcp-jira-sync: sync Jira Cloud tickets into local Markdown context for AI agents.\n"
         f"- Before working on a Jira ticket, call {prefix}jira_sync_ticket(issue_key) with a key (PROJ-123) or a /browse/ URL.\n"
         "- It returns ABSOLUTE paths. Read ticket.md first (YAML frontmatter + description + images in assets/), "
         "then history.md (changelog, newest first) to see how requirements changed.\n"
@@ -135,7 +135,7 @@ def create_server():
         from mcp.server import MCPServer
     except ImportError:
         from mcp.server.fastmcp import FastMCP as MCPServer
-    app = MCPServer("jira-sync-ticket", instructions=jira_instructions())
+    app = MCPServer("mcp-jira-sync", instructions=jira_instructions())
     register_jira_tools(app)
     return app
 

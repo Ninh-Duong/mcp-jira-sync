@@ -10,7 +10,7 @@ flowchart TD
         Hub["Parent MCP hub"]
     end
 
-    subgraph App["jira_sync_ticket"]
+    subgraph App["mcp-jira-sync"]
         CLI["cli.py\nlogin, permission audit, menu"]
         Server["server.py\njira_instructions, register_jira_tools, create_server"]
         Sync["core/sync_service.py\nSyncService.sync -> SyncResult"]

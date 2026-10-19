@@ -40,7 +40,7 @@ class JiraClient:
         return {
             "Authorization": f"Basic {encoded}",
             "Accept": "application/json",
-            "User-Agent": "JiraSyncTicket/1.0",
+            "User-Agent": "mcp-jira-sync/0.1.0",
         }
 
     def _resolve_cloud_id(self) -> Optional[str]:

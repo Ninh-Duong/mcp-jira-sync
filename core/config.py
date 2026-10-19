@@ -17,6 +17,9 @@ ENV_FILE = BASE_DIR / ".env"
 
 def _local_env() -> Dict[str, Optional[str]]:
     """Reads .env as a dict without touching os.environ, so injected variables and the central file keep priority."""
+    # mcp-hub sets PYTHON_DOTENV_DISABLED=1; dotenv_values ignores that flag (only load_dotenv honours it), so check it here
+    if os.getenv("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:
+        return {}
     return dotenv_values(ENV_FILE) if ENV_FILE.exists() else {}
 
 

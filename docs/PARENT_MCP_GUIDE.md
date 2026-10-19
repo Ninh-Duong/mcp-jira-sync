@@ -1,6 +1,6 @@
 # Parent MCP / Hub Integration Guide
 
-How a hub (master/router MCP) consumes `jira_sync_ticket` as a child feature. The patterns (subprocess, in-process mount with a prefix, server instructions) are the usual ones for MCP hubs, so other children can follow the same contract.
+How a hub (master/router MCP) consumes `mcp-jira-sync` as a child feature. The patterns (subprocess, in-process mount with a prefix, server instructions) are the usual ones for MCP hubs, so other children can follow the same contract.
 
 | Pattern | Use when | Isolation | Prefixing |
 |---|---|---|---|
@@ -22,6 +22,7 @@ The child is launched as `python <JIRA_SYNC_PATH>/server.py`. Inject configurati
 | `CENTRAL_CONFIG_PATH` | …a hub-wide secrets JSON with a `jira` object |
 | `AI_CONTEXT_DIR` | where tickets are written; set it to the workspace the agent works in |
 | `MAX_ASSET_SIZE_MB` | optional image cap |
+| `PYTHON_DOTENV_DISABLED` | `1` to ignore the child's own `.env` (recommended for hubs) |
 
 Node / TypeScript hub:
 ```typescript

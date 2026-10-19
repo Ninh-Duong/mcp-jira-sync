@@ -1,4 +1,4 @@
-# jira_sync_ticket
+# mcp-jira-sync
 
 Local MCP server and CLI that turns a Jira Cloud ticket into Markdown + images an AI agent can read: description, screenshots, change history, related issues. Read-only on Jira; runs standalone or as a child of an MCP hub.
 
@@ -17,7 +17,7 @@ MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SET
 ```json
 {
   "mcpServers": {
-    "jira-sync": {
+    "mcp-jira-sync": {
       "command": "python",
       "args": ["<JIRA_SYNC_PATH>/server.py"],
       "env": { "AI_CONTEXT_DIR": "<WORKSPACE>/.ai-context" }

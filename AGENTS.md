@@ -1,6 +1,6 @@
 # AGENTS.md - Operating Manual for AI Agents
 
-> This repository (`jira_sync_ticket`) is built by AI agents (vibe-coded). Any agent that reads or changes it (Claude, Gemini, GPT, Cursor, Copilot, Antigravity) MUST follow the rules below. When a rule and your instinct disagree, the rule wins. When the code and a doc disagree, it is a bug: fix one of them in the same change.
+> This repository (`mcp-jira-sync`) is built by AI agents (vibe-coded). Any agent that reads or changes it (Claude, Gemini, GPT, Cursor, Copilot, Antigravity) MUST follow the rules below. When a rule and your instinct disagree, the rule wins. When the code and a doc disagree, it is a bug: fix one of them in the same change.
 
 ---
 

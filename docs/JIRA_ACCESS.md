@@ -30,7 +30,7 @@ The CLI checks `BROWSE_PROJECTS` globally with `/mypermissions`. A `false` there
 
 1. **Process environment**: what a hub or MCP client entry injects.
 2. **Central JSON file** at `CENTRAL_CONFIG_PATH` (from env, or from `.env`).
-3. **Local `.env`** in the repo root: written by the CLI login, read with `dotenv_values` (it never modifies `os.environ`).
+3. **Local `.env`** in the repo root: written by the CLI login, read with `dotenv_values` (it never modifies `os.environ`). Skipped entirely when `PYTHON_DOTENV_DISABLED` is `1`/`true`/`yes` (mcp-hub sets it), so a standalone `.env` never leaks into hub runs.
 
 Central file shape (the `jira` object is optional; a flat object also works):
 ```json
@@ -48,6 +48,7 @@ An unreadable central file is logged as a warning and skipped.
 | `MAX_ASSET_SIZE_MB` | `max_asset_size_mb` | `15` | per-image download cap; invalid → 15 |
 | `CENTRAL_CONFIG_PATH` | n/a | unset | path to the central JSON (`~` expanded) |
 | `AI_CONTEXT_DIR` | n/a | `<repo>/.ai-context` | output folder; env or `.env` only, read once at start |
+| `PYTHON_DOTENV_DISABLED` | n/a | unset | `1`/`true`/`yes`: ignore `.env` completely (set by mcp-hub) |
 
 `.env.example` lists them all. `save_config` (CLI login) updates only the four `JIRA_*` / `MAX_ASSET_SIZE_MB` lines and keeps everything else in `.env`.
 
