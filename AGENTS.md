@@ -30,7 +30,8 @@ If a task needs real data in a tracked file, stop and tell the user why it can't
 - **Docs move with code** (anti-drift rule): a change to a tool, an output file, a config variable, or a feature's behavior updates, in the same change:
   1. the matching doc ([docs/FEATURES.md](docs/FEATURES.md), [docs/AI_CONTEXT_FORMAT.md](docs/AI_CONTEXT_FORMAT.md), [docs/JIRA_ACCESS.md](docs/JIRA_ACCESS.md), §4 below),
   2. `jira_instructions()` in [server.py](server.py) if an agent would call or read things differently,
-  3. the contract test in `tests/test_sync.py` (`TestContracts`).
+  3. the contract test in `tests/test_sync.py` (`TestContracts`),
+  4. for a tool name, config key, or launch change: `../mcp-hub/docs/mcps/mcp-jira-sync.md` and `../mcp-hub/config/mcps/mcp-jira-sync.example.json` (§5).
 - **Tests come with every change**: a feature or bug fix lands with a test that fails without it. Run before reporting done:
   ```bash
   python utils/env_check.py
@@ -108,7 +109,7 @@ Registered by `register_jira_tools(app, prefix="")`; names below are with an emp
 | `jira_list_synced` | none | One line per synced ticket: key, summary, status, assignee, `synced_at` | readOnly true, openWorld true (gate) |
 | `jira_check_connection` | none | Base URL and user display name / email, or a configuration hint | readOnly true, openWorld true |
 
-**Server instructions**: `create_server()` sends `jira_instructions()` on connect. It is the only guidance an agent in another repository gets (it never sees this file). Keep it in sync with this table.
+**Server instructions**: `create_server()` sends `jira_instructions()` on connect. On a direct connection it is the only guidance an agent in another repository gets (it never sees this file). mcp-hub does not forward it: it serves its own contract, `../mcp-hub/docs/mcps/mcp-jira-sync.md`. Keep both in sync with this table.
 
 ---
 
@@ -118,4 +119,4 @@ This server is designed to be a child of an MCP hub:
 - **Subprocess (any hub language)**: spawn `python <PATH>/server.py` over stdio, inject `JIRA_*` (including `JIRA_AI_CONTEXT_KEY`) / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR` as env.
 - **In-process (Python hub)**: `from server import register_jira_tools, jira_instructions`, then `register_jira_tools(hub_app)`. Tool names already start with `jira_`; pass a `prefix` only if the hub has a name clash.
 
-Details and examples: [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md). Connecting an AI client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md). When the launch command, env variables, or tool names change, update both files in the same change.
+Details and examples: [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md). Connecting an AI client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md). Running under mcp-hub: [README.md](README.md#running-under-mcp-hub). When the launch command, env variables, config keys, or tool names change, update both files in the same change, and also `../mcp-hub/docs/mcps/mcp-jira-sync.md` and `../mcp-hub/config/mcps/mcp-jira-sync.example.json`.

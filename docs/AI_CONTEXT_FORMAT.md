@@ -137,5 +137,5 @@ Images embedded in the description (`media` nodes whose `alt` ends in an image e
 | Date | Change |
 |---|---|
 | 2026-10-20 | Frontmatter values are JSON-quoted (valid YAML). Before, `key`/`status`/... were unquoted and `labels` was a Python repr (`['a', 'b']`). |
-| 2026-10-20 | `AI_CONTEXT_DIR` can move the folder; tools return absolute paths (were relative to the repo). |
+| 2026-10-20 | `AI_CONTEXT_DIR` can move the folder (tools briefly returned absolute paths; since the encryption change below they return no paths). |
 | 2026-10-20 | **Breaking**: every file is encrypted (`<name>.enc`, Fernet, key `JIRA_AI_CONTEXT_KEY`). `INDEX.md` is gone. Agents read through `jira_read_ticket` / `jira_read_asset`; tools no longer return file paths. Old plaintext folders are not read: re-sync each ticket (its plaintext files are deleted) or delete `.ai-context/`. |

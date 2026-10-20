@@ -71,7 +71,7 @@ Non-goals: no filtering or search parameters until an agent needs them (then add
 Rules:
 1. The CLI prints the required permissions and scopes ([JIRA_ACCESS.md](JIRA_ACCESS.md)), asks for URL, email, and token (Enter keeps the saved value), verifies, audits `BROWSE_PROJECTS`, then saves to `.env`, keeping every other line in it. When no source has a `JIRA_AI_CONTEXT_KEY` yet, it also writes a new one (F7); an existing key is never replaced, so switching account keeps old data readable.
 2. A missing `BROWSE_PROJECTS` is a **warning** with a y/n prompt, not a block (the global check can be false while one project still grants access).
-3. The MCP tool never asks for or saves credentials; it tells the agent to have the user run `python cli.py`.
+3. The MCP tool never asks for or saves credentials; it tells the agent to have the user run `python cli.py` (standalone; under mcp-hub fix the `jira` block in the Hub private config).
 4. Credential priority: process env > central JSON (`CENTRAL_CONFIG_PATH`) > `.env`.
 
 Non-goals: no multi-account switching inside the MCP server, no keychain storage.
@@ -111,7 +111,7 @@ Rules:
 1. Every file under `.ai-context/` is a Fernet token (`cryptography`: AES-128-CBC + HMAC-SHA256, authenticated) named `<name>.enc`. Plaintext never touches the disk: images are encrypted from memory.
 2. The key is `JIRA_AI_CONTEXT_KEY` (process env > central JSON `ai_context_key` > `.env`, the same priority as the token). The CLI writes one at the first login. The server never writes it, so under a hub (`PYTHON_DOTENV_DISABLED=1`) it must be injected.
 3. The gate `unlock(config)` passes only when the key is set and valid **and** `verify_account()` succeeds right now. It runs on every sync, read, and list call, with no cache.
-4. A refusal, or a file that fails to decrypt (wrong key, edited file), gives a message starting with `No access:`. Agents are told to stop and send the user to `python cli.py`.
+4. A refusal, or a file that fails to decrypt (wrong key, edited file), gives a message starting with `No access:`. Agents are told to stop and send the user to `python cli.py` (standalone; under mcp-hub fix the `jira` block in the Hub private config).
 5. The key and decrypted content are never logged. The log records only the error type of a failed access check.
 
 Non-goals: no per-user or per-project keys (one key per `.ai-context/`; share it with teammates who should read the same folder), no key rotation (a lost or changed key means deleting `.ai-context/` and syncing again), no hidden file or folder names (ticket keys and image names stay visible), no migration of old plaintext folders (re-sync or delete them).

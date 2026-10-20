@@ -14,7 +14,7 @@ Tool names already carry a `jira_` namespace, so the default prefix is `""`. Add
 
 ## Pattern 1: subprocess over stdio (recommended)
 
-The child is launched as `python <JIRA_SYNC_PATH>/server.py`. Inject configuration as environment variables; they win over the child's own `.env` ([JIRA_ACCESS.md §3](JIRA_ACCESS.md#3-configuration-sources-and-priority)).
+The child is launched as `python <JIRA_SYNC_PATH>/server.py`. (Under mcp-hub the hub's own venv runs it, with credentials in the hub private config: [README.md](../README.md#running-under-mcp-hub).) Inject configuration as environment variables; they win over the child's own `.env` ([JIRA_ACCESS.md §3](JIRA_ACCESS.md#3-configuration-sources-and-priority)).
 
 | Env | Purpose |
 |---|---|
@@ -42,7 +42,7 @@ const jira = new Client({ name: 'hub', version: '1.0.0' });
 await jira.connect(transport);
 
 const { tools } = await jira.listTools();   // jira_sync_ticket, jira_read_ticket, jira_read_asset, jira_list_synced, jira_check_connection
-const instructions = jira.getInstructions();           // forward into the hub's own instructions
+const instructions = jira.getInstructions();           // jira_instructions(); a hub may forward it (mcp-hub does not: it serves its own contract)
 await jira.callTool({ name: 'jira_sync_ticket', arguments: { issue_key: 'PROJ-123' } });
 const ticket = await jira.callTool({ name: 'jira_read_ticket', arguments: { issue_key: 'PROJ-123' } });
 ```
@@ -67,7 +67,7 @@ async with stdio_client(params) as (r, w), ClientSession(r, w) as session:
 Notes:
 - The child's stderr carries its logs; its `logs/app.log` stays in the child's folder.
 - Run `python <JIRA_SYNC_PATH>/utils/env_check.py` once at hub install time; on a missing dependency the child exits 1 with the reason on stderr.
-- Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder. The child never writes a key itself, so with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it.
+- Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder (standalone; under mcp-hub fix the `jira` block in the Hub private config). The child never writes a key itself, so with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it.
 - Read-only hubs: `jira_sync_ticket` is the only tool with `readOnlyHint: false`. A user asking to "read PROJ-123" is asking for that write; the three read tools and `jira_check_connection` are read-only.
 - `jira_read_asset` returns an MCP **image** block; a hub that re-exposes results must pass non-text content through.
 

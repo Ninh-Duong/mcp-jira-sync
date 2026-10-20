@@ -20,7 +20,7 @@ as an MCP server named mcp-jira-sync. Verify with jira_check_connection.
 - **Absolute paths, forward slashes**: `<JIRA_SYNC_PATH>/server.py`. No `~`, `%USERPROFILE%`, or `$HOME` inside `args`.
 - **Output folder**: the default `<JIRA_SYNC_PATH>/.ai-context` is fine, since you read through the tools. If you set `AI_CONTEXT_DIR` elsewhere, git-ignore it there (file names show ticket keys).
 - Never commit `.env`, `logs/`, or `.ai-context/`.
-- **Using mcp-hub?** Register the hub instead: it launches this server itself (server id `mcp-jira-sync`). Don't add a direct entry as well.
+- **Using mcp-hub?** Register the hub instead: it launches this server itself (server id `mcp-jira-sync`, see [README.md](../README.md#running-under-mcp-hub)). Don't add a direct entry as well.
 
 ## 2. The server entry
 
@@ -52,7 +52,7 @@ python --version
 python -m pip install -r "<JIRA_SYNC_PATH>/requirements.txt"
 python "<JIRA_SYNC_PATH>/utils/env_check.py"
 ```
-Record the absolute interpreter (`where python` / `which python`). GUI clients may not see a venv/pyenv Python on your shell PATH; use the absolute path as `command` if spawning fails. **Done when** env_check prints `[SUCCESS]`.
+(Under mcp-hub, skip this: the hub's venv runs the server, see [README.md](../README.md#running-under-mcp-hub).) Record the absolute interpreter (`where python` / `which python`). GUI clients may not see a venv/pyenv Python on your shell PATH; use the absolute path as `command` if spawning fails. **Done when** env_check prints `[SUCCESS]`.
 
 **Step 3: Register** the entry (§2) in your client (§4). **Done when** the config file contains `mcp-jira-sync` and still parses.
 

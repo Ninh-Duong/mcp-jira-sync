@@ -8,7 +8,7 @@ python utils/env_check.py          # pre-flight: Python 3.10+ and dependencies
 python cli.py                      # first run asks for Jira URL, email, API token, then saves .env
 ```
 
-Token and permissions: [JIRA_ACCESS.md](JIRA_ACCESS.md).
+Token and permissions: [JIRA_ACCESS.md](JIRA_ACCESS.md). Under mcp-hub the hub's venv and private config are used instead: [README.md](../README.md#running-under-mcp-hub).
 
 ## 2. CLI
 
@@ -62,7 +62,7 @@ Every file is encrypted: opening one shows only a Fernet token. The format is a 
 
 ## 5. Inside an MCP hub
 
-Spawn `python <JIRA_SYNC_PATH>/server.py` as a stdio child and inject `JIRA_*` / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR`, or mount it in a Python hub with `register_jira_tools(app)`: [PARENT_MCP_GUIDE.md](PARENT_MCP_GUIDE.md).
+Spawn `python <JIRA_SYNC_PATH>/server.py` as a stdio child and inject `JIRA_*` / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR`, or mount it in a Python hub with `register_jira_tools(app)`: [PARENT_MCP_GUIDE.md](PARENT_MCP_GUIDE.md). mcp-hub specifics: [README.md](../README.md#running-under-mcp-hub).
 
 ## 6. Debugging
 

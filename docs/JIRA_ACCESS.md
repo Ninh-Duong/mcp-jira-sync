@@ -70,6 +70,6 @@ An unreadable central file is logged as a warning and skipped.
 | `[404] Ticket … was not found` | typo, or the ticket is hidden from you (Jira returns 404 for both) | check the key in the browser |
 | Images missing, `assets_count` lower than attachments | file over `MAX_ASSET_SIZE_MB`, or a download failed | see `logs/app.log`; raise the cap |
 | Hub credentials ignored | the old code let `.env` win over the central file | fixed 2026-10-20: process env > central > `.env` |
-| `No access: JIRA_AI_CONTEXT_KEY is not set` | no key in any source (always the case under a hub until you add one) | run `python cli.py` once, or add `ai_context_key` to the central JSON |
-| `No access: cannot log in to Jira …` | token expired/revoked, or no network | `python cli.py` → `[3]` to log in again |
+| `No access: JIRA_AI_CONTEXT_KEY is not set` | no key in any source (always the case under a hub until you add one) | run `python cli.py` once (standalone), or add `ai_context_key` to the central JSON (under mcp-hub: the `jira` block in the Hub private config) |
+| `No access: cannot log in to Jira …` | token expired/revoked, or no network | `python cli.py` → `[3]` to log in again (standalone; under mcp-hub fix the `jira` block in the Hub private config) |
 | `No access: cannot decrypt …` | the key is not the one the files were written with, or a file was edited | use the original key, or delete `.ai-context/` and re-sync |
