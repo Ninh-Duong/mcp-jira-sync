@@ -15,7 +15,9 @@ Four runtime packages, nothing else. Adding one needs a row here explaining why 
 
 ## Dev / tooling
 
-None installed by the project. Tests use stdlib `unittest` + `unittest.mock`. `uv` (optional) runs the suite on other Python or mcp versions without a venv.
+No dev packages are installed by the project. Tests use stdlib `unittest` + `unittest.mock`. Standalone setup and CI use `uv sync --locked` and `uv run --locked` with the committed `uv.lock`, which resolves Python 3.10+ and platform-specific dependencies. Update dependency versions deliberately with `uv lock --upgrade`, then rerun the development checks. `requirements.txt` keeps the same four compatible ranges for pip users; it is not an exact lockfile. The Hub continues to supply its own environment and dependency lock.
+
+Setuptools builds only `core`, `utils`, `server`, and `cli`, avoiding accidental discovery of local data directories. CI syncs the project and runs the pre-flight, unit tests, and compilation checks on Windows/macOS/Ubuntu with Python 3.10/3.12.
 
 ## Deliberately excluded
 

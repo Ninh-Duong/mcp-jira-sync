@@ -18,3 +18,7 @@ dependencies = [
 [project.scripts]
 mcp-jira-sync-cli = "cli:main"
 mcp-jira-sync = "server:main"
+
+[tool.setuptools]
+packages = ["core", "utils"]
+py-modules = ["server", "cli"]

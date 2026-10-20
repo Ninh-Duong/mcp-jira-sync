@@ -3,10 +3,12 @@
 ## 1. Install and log in
 
 ```bash
-pip install -r requirements.txt
-python utils/env_check.py          # pre-flight: Python 3.10+ and dependencies
-python cli.py                      # first run asks for Jira URL, email, API token, then saves .env
+uv sync --locked
+uv run --locked python utils/env_check.py          # pre-flight: Python 3.10+ and dependencies
+uv run --locked python cli.py      # first run asks for Jira URL, email, API token, then saves .env
 ```
+
+Run from the clone with Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/) installed. `python -m pip install -r requirements.txt` is an alternative for an existing environment, using compatible dependency ranges rather than locked versions.
 
 Token and permissions: [JIRA_ACCESS.md](JIRA_ACCESS.md). Under mcp-hub the hub's venv and private config are used instead: [README.md](../README.md#running-under-mcp-hub).
 
@@ -27,7 +29,7 @@ A missing `BROWSE_PROJECTS` is a warning with a `y/n` prompt, not a block. Behav
 
 ## 3. MCP server
 
-The AI client starts `python <JIRA_SYNC_PATH>/server.py` over stdio. Client-by-client setup: [AI_AGENT_SETUP.md](AI_AGENT_SETUP.md).
+For standalone use from the clone, run `uv run --locked python server.py` over stdio. An AI client can invoke the synced `.venv` interpreter with `<JIRA_SYNC_PATH>/server.py`. Client-by-client setup: [AI_AGENT_SETUP.md](AI_AGENT_SETUP.md).
 
 | Tool | Does |
 |---|---|
@@ -71,7 +73,9 @@ Everything (requests, file writes, tracebacks with `file:line in function`) goes
 ## 7. Development
 
 ```bash
-python -m unittest discover tests  # offline, < 2 s, includes the public-repo hygiene check
+uv run --locked python utils/env_check.py
+uv run --locked python -m unittest discover tests  # offline, includes the public-repo hygiene check
+uv run --locked python -m compileall -q cli.py server.py core utils tests
 ```
 
 Rules for every change are in [AGENTS.md](../AGENTS.md) and [SECURITY.md](SECURITY.md).

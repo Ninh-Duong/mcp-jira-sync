@@ -4,13 +4,17 @@ Local MCP server and CLI that lets an AI agent read a Jira Cloud ticket before i
 
 ## Quick start
 
-Python 3.10+.
+Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/). Run these commands from this clone.
 
 ```bash
-pip install -r requirements.txt
-python utils/env_check.py
-python cli.py                 # log in once (also creates the encryption key), then sync and read tickets
+uv sync --locked
+uv run --locked python utils/env_check.py
+uv run --locked python cli.py                 # log in once (also creates the encryption key), then sync and read tickets
 ```
+
+Start the standalone stdio server with `uv run --locked python server.py`. For clients, replace `<JIRA_SYNC_PYTHON>` below with the absolute interpreter created by `uv sync`: `<JIRA_SYNC_PATH>/.venv/Scripts/python.exe` on Windows or `<JIRA_SYNC_PATH>/.venv/bin/python` on macOS/Linux.
+
+`python -m pip install -r requirements.txt` remains available for an existing environment; it installs compatible ranges rather than the exact versions in `uv.lock`.
 
 MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md)):
 
@@ -18,7 +22,7 @@ MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SET
 {
   "mcpServers": {
     "mcp-jira-sync": {
-      "command": "python",
+      "command": "<JIRA_SYNC_PYTHON>",
       "args": ["<JIRA_SYNC_PATH>/server.py"]
     }
   }
@@ -47,3 +51,14 @@ With mcp-hub cloned as a sibling (`../mcp-hub` next to this repo), register the 
 ## Contributing (humans and AI agents)
 
 Read [AGENTS.md](AGENTS.md) first. This repository is **public**: [docs/SECURITY.md](docs/SECURITY.md) is mandatory (no local paths, no real tenant, project, ticket, or people data, no secrets).
+
+## Development checks
+
+```bash
+uv sync --locked
+uv run --locked python utils/env_check.py
+uv run --locked python -m unittest discover tests
+uv run --locked python -m compileall -q cli.py server.py core utils tests
+```
+
+CI runs these checks on Windows, macOS, and Ubuntu with Python 3.10 and 3.12.
