@@ -14,9 +14,9 @@
 
 ## 3. MCP tools
 - A tool is a plain function in `server.py` with a docstring (the docstring is the tool description agents see) and **one** `app.add_tool(fn, name=f"{prefix}...", annotations=ToolAnnotations(...))` line in `register_jira_tools`. No `@app.tool()` decorators: they bind to one app and block mounting.
-- Annotations: `readOnlyHint=True` unless the tool writes files (only `jira_sync_ticket`, with `destructiveHint=False`); `openWorldHint=True` when it calls Jira.
+- Annotations: `readOnlyHint=True` unless the tool writes files (only `jira_sync_ticket`, with `destructiveHint=False`); `openWorldHint=True` when it calls Jira, which includes every tool behind the access gate.
 - Arguments: simple JSON types with defaults; accept the forms a human would paste (key or URL).
-- Return text an agent can act on: absolute paths, the next step, and where the logs are. Keep `jira_instructions()` accurate.
+- Return text an agent can act on: the content itself (decrypted only behind the gate), the next step, and where the logs are. Keep `jira_instructions()` accurate.
 
 ## 4. Error handling
 - Core functions return results or raise `JiraApiError(status, message)`; `SyncService.sync` converts everything into `SyncResult(success=False, message=...)`. Tools and the CLI never show a raw traceback.
@@ -32,9 +32,9 @@
 ## 6. Security
 - Credentials only in `.env` (git-ignored), process env, or the hub's central file. `save_config` updates only the `JIRA_*` / `MAX_ASSET_SIZE_MB` lines.
 - Attachment filenames are sanitized; issue keys are validated by regex before any path is built from them.
-- `.ai-context/` holds internal ticket data and is git-ignored, in this repo and in any workspace `AI_CONTEXT_DIR` points to.
+- `.ai-context/` holds internal ticket data, encrypted through `core/vault.py` only, and stays git-ignored in this repo (file names are plaintext).
 
 ## 7. Tests
 - `python -m unittest discover tests`, offline and fast (< 2 s). Rules: [AGENTS.md → Testing rules](../AGENTS.md#testing-rules).
 - Every bug fix starts with a failing test; every contract change updates `TestContracts`.
-- Before reporting done on syntax-heavy changes, run the suite on 3.10 (`uv run --no-project --python 3.10 --with mcp --with httpx --with python-dotenv python -m unittest discover tests`), and on mcp 1.x with `--with "mcp<2"`.
+- Before reporting done on syntax-heavy changes, run the suite on 3.10 (`uv run --no-project --python 3.10 --with mcp --with httpx --with python-dotenv --with cryptography python -m unittest discover tests`), and on mcp 1.x with `--with "mcp<2"`.

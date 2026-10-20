@@ -1,5 +1,4 @@
 import base64
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
@@ -193,16 +192,15 @@ class JiraClient:
             logger.error(f"Error fetching issue {key}: {last_status} - {last_error}")
             raise JiraApiError(last_status, f"Jira API error: {last_error}")
 
-    def download_attachment(self, content_url: str, dest_path: Path) -> bool:
-        """Downloads an attachment file if it does not exceed the size limit.
+    def download_attachment(self, content_url: str, name: str) -> Optional[bytes]:
+        """Downloads an attachment into memory (never to disk: the caller encrypts it) if it fits the size limit.
 
-        Returns True on success, False otherwise.
+        Returns the bytes on success, None otherwise.
         """
-        logger.debug(f"Downloading attachment from {content_url} to {dest_path}")
+        logger.debug(f"Downloading attachment {name} from {content_url}")
         max_bytes = self.config.max_asset_size_mb * 1024 * 1024
 
         try:
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
             with httpx.Client(timeout=30.0, follow_redirects=True) as client:
                 # Jira Cloud attachment URLs require Basic Auth or redirect to authenticated S3/Cloudfront
                 with client.stream("GET", content_url, headers=self._auth_header) as response:
@@ -210,36 +208,24 @@ class JiraClient:
                         logger.warning(
                             f"Failed to download asset {content_url}: HTTP {response.status_code}"
                         )
-                        return False
+                        return None
 
                     content_length = response.headers.get("content-length")
                     if content_length and int(content_length) > max_bytes:
                         logger.warning(
-                            f"Skipping asset {dest_path.name}: size {content_length} bytes exceeds limit of {max_bytes} bytes"
+                            f"Skipping asset {name}: size {content_length} bytes exceeds limit of {max_bytes} bytes"
                         )
-                        return False
+                        return None
 
-                    downloaded = 0
-                    with open(dest_path, "wb") as f:
-                        for chunk in response.iter_bytes(chunk_size=16384):
-                            downloaded += len(chunk)
-                            if downloaded > max_bytes:
-                                logger.warning(
-                                    f"Aborted asset {dest_path.name}: downloaded exceeded limit"
-                                )
-                                f.close()
-                                if dest_path.exists():
-                                    dest_path.unlink()
-                                return False
-                            f.write(chunk)
+                    data = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=16384):
+                        data += chunk
+                        if len(data) > max_bytes:
+                            logger.warning(f"Aborted asset {name}: downloaded exceeded limit")
+                            return None
 
-            logger.info(f"Asset downloaded successfully: {dest_path.name} ({downloaded} bytes)")
-            return True
+            logger.info(f"Asset downloaded successfully: {name} ({len(data)} bytes)")
+            return bytes(data)
         except Exception as e:
-            logger.error(f"Error downloading attachment {dest_path.name}: {e}", exc_info=True)
-            if dest_path.exists():
-                try:
-                    dest_path.unlink()
-                except Exception:
-                    pass
-            return False
+            logger.error(f"Error downloading attachment {name}: {e}", exc_info=True)
+            return None

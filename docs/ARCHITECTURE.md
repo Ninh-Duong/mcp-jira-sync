@@ -16,13 +16,14 @@ flowchart TD
         Sync["core/sync_service.py\nSyncService.sync -> SyncResult"]
         Client["core/jira_client.py\nJiraClient (httpx)"]
         ADF["core/adf_parser.py\nadf_to_markdown (pure)"]
-        Index["core/indexer.py\ncatalog.json + INDEX.md"]
+        Index["core/indexer.py\ncatalog.json.enc"]
+        Vault["core/vault.py\nunlock (key + live login), Fernet read/write"]
         Config["core/config.py\npaths + load_config / save_config"]
         Log["utils/logger.py\nlogs/app.log + stderr"]
     end
 
     Jira["Jira Cloud REST v3\n(tenant URL or api.atlassian.com gateway)"]
-    Ctx[("AI_CONTEXT_DIR\n.ai-context/")]
+    Ctx[("AI_CONTEXT_DIR\n.ai-context/ (*.enc only)")]
 
     Human --> CLI
     Agent -->|stdio JSON-RPC| Server
@@ -31,10 +32,13 @@ flowchart TD
     Server --> Sync
     CLI --> Client
     Server --> Client
+    CLI --> Vault
+    Server --> Vault
     Sync --> Client --> Jira
     Sync --> ADF
-    Sync --> Index --> Ctx
-    Sync --> Ctx
+    Sync --> Index --> Vault
+    Sync --> Vault --> Ctx
+    Vault -->|verify_account| Client
     Config -.-> Sync
     Config -.-> Client
 ```
@@ -49,19 +53,32 @@ sequenceDiagram
     participant FS as AI_CONTEXT_DIR
     C->>S: sync("…/browse/PROJ-1")
     S->>S: extract_issue_key → PROJ-1 (else SyncResult(success=False))
+    S->>J: unlock: key set? verify_account() (else "No access: …", nothing written)
     S->>J: get_issue(PROJ-1) (expand=changelog,names)
     J-->>S: issue JSON (or JiraApiError 401/403/404)
     loop each image attachment
-        S->>J: download_attachment(content_url, assets/<name>) (size-capped)
+        S->>J: download_attachment(content_url, name) → bytes in memory (size-capped)
+        S->>FS: write_encrypted assets/<name>.enc
     end
-    S->>FS: purge assets not attached any more
+    S->>FS: purge assets not attached any more (and plaintext leftovers)
     S->>S: adf_to_markdown(description)
-    S->>FS: write tickets/PROJ-1/ticket.md, history.md
-    S->>FS: register_ticket → catalog.json + INDEX.md
+    S->>FS: write_encrypted tickets/PROJ-1/ticket.md.enc, history.md.enc
+    S->>FS: register_ticket → catalog.json.enc
     S-->>C: SyncResult(success, ticket_file, history_file, assets_downloaded, message)
 ```
 
-Steps 1-8 in the code match this order. `sync()` catches every exception and returns a `SyncResult`; callers never need `try`.
+Steps 0-8 in the code match this order. `sync()` catches every exception and returns a `SyncResult`; callers never need `try`.
+
+## 2b. Read path (`jira_read_ticket`, `jira_read_asset`, `jira_list_synced`, CLI `[5]`)
+
+```
+tool → load_config() → unlock(config)          # key valid AND verify_account() succeeds now, else "❌ No access: …"
+     → read_synced_file(key, "ticket.md" | "history.md" | "assets/<file>", fernet)
+         → path must stay inside tickets/<KEY>/ → read_encrypted (HMAC check) → plaintext in memory only
+     → text, or an MCP image block
+```
+
+Nothing decrypted is cached or written; each call decrypts again. Format and key: [AI_CONTEXT_FORMAT.md §2](AI_CONTEXT_FORMAT.md#2-tree-and-encryption).
 
 ## 3. Jira access strategy
 
@@ -70,7 +87,7 @@ Steps 1-8 in the code match this order. `sync()` catches every exception and ret
 1. **Constructor**: for `*.atlassian.net`, `GET <base>/_edge/tenant_info` (8 s timeout, unauthenticated) → `cloudId`. If found, `api_url = https://api.atlassian.com/ex/jira/<cloudId>`; otherwise `api_url = base_url`.
 2. **`verify_account`**: try `GET <base>/rest/api/3/myself` directly. On failure, and if a cloudId exists, try `GET <gateway>/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS`; on success, use the gateway, and `/myself` if allowed, else a synthesized `"<name> (Scoped Token)"` user. Otherwise raise `JiraApiError(401)`.
 3. **`get_issue`**: try `api_url`, then gateway, then direct (deduplicated). 401/403/404 move on to the next candidate; the last status decides the error.
-4. **`download_attachment`**: stream the attachment `content` URL with redirects, abort past `MAX_ASSET_SIZE_MB`, and delete partial files.
+4. **`download_attachment`**: stream the attachment `content` URL with redirects into memory, abort past `MAX_ASSET_SIZE_MB`, return the bytes (the caller encrypts them; nothing touches the disk here).
 
 Timeouts: tenant_info 8 s · myself/permissions 15 s · issue 25 s · attachment 30 s. No retries.
 
@@ -80,7 +97,7 @@ Auth: `Authorization: Basic base64(email:token)`. The token is never logged.
 
 - `BASE_DIR` = repo root (from `__file__`). `.env` and `logs/` always live there.
 - `AI_CONTEXT_DIR`: env > `.env` > `<repo>/.ai-context`, resolved once at import. See [AI_CONTEXT_FORMAT.md](AI_CONTEXT_FORMAT.md#1-location).
-- Credentials: `load_config()` is called per sync/check (not cached), so a CLI login takes effect immediately. Priority and the central file: [JIRA_ACCESS.md](JIRA_ACCESS.md#3-configuration-sources-and-priority).
+- Credentials and `JIRA_AI_CONTEXT_KEY`: `load_config()` is called per tool call (not cached), so a CLI login takes effect immediately. Priority and the central file: [JIRA_ACCESS.md](JIRA_ACCESS.md#3-configuration-sources-and-priority).
 
 ## 5. Process model
 

@@ -7,6 +7,7 @@ REQUIRED_PACKAGES: List[Tuple[str, str]] = [
     ("mcp", "mcp"),
     ("httpx", "httpx"),
     ("dotenv", "python-dotenv"),
+    ("cryptography", "cryptography"),
 ]
 
 

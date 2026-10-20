@@ -1,6 +1,6 @@
 # mcp-jira-sync
 
-Local MCP server and CLI that turns a Jira Cloud ticket into Markdown + images an AI agent can read: description, screenshots, change history, related issues. Read-only on Jira; runs standalone or as a child of an MCP hub.
+Local MCP server and CLI that lets an AI agent read a Jira Cloud ticket before it works on it: description, screenshots, change history, related issues. The local copy is **encrypted**: only someone with the key and a working Jira login can read it, through the tools or the CLI. Read-only on Jira; runs standalone or as a child of an MCP hub (`/mcp-hub mcp-jira-sync PROJ-123 read this ticket first`).
 
 ## Quick start
 
@@ -9,7 +9,7 @@ Python 3.10+.
 ```bash
 pip install -r requirements.txt
 python utils/env_check.py
-python cli.py                 # log in once, then sync tickets from the menu
+python cli.py                 # log in once (also creates the encryption key), then sync and read tickets
 ```
 
 MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md)):
@@ -19,8 +19,7 @@ MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SET
   "mcpServers": {
     "mcp-jira-sync": {
       "command": "python",
-      "args": ["<JIRA_SYNC_PATH>/server.py"],
-      "env": { "AI_CONTEXT_DIR": "<WORKSPACE>/.ai-context" }
+      "args": ["<JIRA_SYNC_PATH>/server.py"]
     }
   }
 }
@@ -31,7 +30,7 @@ MCP client entry (details per client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SET
 - [docs/USAGE.md](docs/USAGE.md): CLI, MCP tools, output, debugging
 - [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md): connect an AI client
 - [docs/JIRA_ACCESS.md](docs/JIRA_ACCESS.md): token, permissions, configuration
-- [docs/AI_CONTEXT_FORMAT.md](docs/AI_CONTEXT_FORMAT.md): output format contract
+- [docs/AI_CONTEXT_FORMAT.md](docs/AI_CONTEXT_FORMAT.md): output format and encryption contract
 - [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md): MCP hub integration
 - [docs/FEATURES.md](docs/FEATURES.md): what each feature does and does not do
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): modules and data flow

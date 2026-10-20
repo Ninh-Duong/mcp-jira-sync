@@ -26,13 +26,11 @@ from core.config import (
     save_config,
     REQUIRED_PERMISSIONS,
     JIRA_GRANULAR_SCOPES,
-    INDEX_FILE,
-    CATALOG_FILE,
-    TICKETS_DIR,
 )
 from core.jira_client import JiraClient, JiraApiError
-from core.sync_service import SyncService
+from core.sync_service import SyncService, read_synced_file
 from core.indexer import list_indexed_tickets
+from core.vault import NoAccessError, unlock
 
 # Global session tracking authenticated user & verified permissions
 SESSION = {
@@ -197,12 +195,10 @@ def handle_sync_ticket() -> None:
     if result.success:
         print("\n" + "=" * 65)
         print(f"🎉 TICKET SYNCED SUCCESSFULLY: {result.key}")
-        print(f"📄 Ticket File    : {result.ticket_file}")
-        print(f"📜 Changelog File : {result.history_file}")
+        print(f"🔒 Encrypted Files: {result.ticket_file.parent}")
         print(f"🖼️  Assets Download: {result.assets_downloaded} image(s)")
-        print(f"📊 Catalog Index  : {INDEX_FILE}")
         print("=" * 65)
-        print("💡 Tip: AI Agents can now read ticket.md and history.md for full context.")
+        print("💡 Tip: read it here with [5], or let an AI Agent call jira_read_ticket.")
     else:
         print(f"\n❌ Sync failed: {result.message}")
         print("🔍 See error stack trace in: logs/app.log")
@@ -210,7 +206,11 @@ def handle_sync_ticket() -> None:
 
 def handle_list_tickets() -> None:
     """Displays table of all synced tickets."""
-    tickets = list_indexed_tickets()
+    try:
+        tickets = list_indexed_tickets(unlock(load_config()))
+    except NoAccessError as e:
+        print(f"\n❌ {e}")
+        return
     if not tickets:
         print("\nℹ️  No tickets have been synced yet in .ai-context/tickets/")
         return
@@ -226,8 +226,19 @@ def handle_list_tickets() -> None:
         assignee = t.get("assignee", "")[:18]
         assets = t.get("assets_count", 0)
         print(f"{key:<12} | {t_type:<10} | {status:<14} | {assignee:<18} | {assets} image(s)")
-    print("-" * 75)
-    print(f"Full catalog index: {INDEX_FILE}\n")
+    print("-" * 75 + "\n")
+
+
+def handle_read_ticket() -> None:
+    """Decrypts and prints a synced ticket.md, after the same access gate the MCP tools use."""
+    issue_key = input("\n👉 Enter synced Ticket Key to read (e.g. PROJ-123): ").strip()
+    if not issue_key:
+        print("[!] Ticket key cannot be empty.")
+        return
+    try:
+        print("\n" + read_synced_file(issue_key, "ticket.md", unlock(load_config())).decode("utf-8"))
+    except (NoAccessError, ValueError, FileNotFoundError) as e:
+        print(f"\n❌ {e}")
 
 
 def handle_check_account() -> None:
@@ -304,15 +315,17 @@ def main() -> None:
         print(" [1] Sync Jira Ticket")
         print("     ↳ Required: BROWSE_PROJECTS (or read:jira-work, read:attachment)")
         print(" [2] List Synced Tickets")
-        print("     ↳ Required: Local storage only (No Jira permissions needed)")
+        print("     ↳ Required: read:me (decrypting needs a working login)")
         print(" [3] Check / Switch Jira Account")
         print("     ↳ Required: read:me / Basic Auth")
         print(" [4] Start MCP Server (Stdio Mode)")
         print("     ↳ Required: BROWSE_PROJECTS (or read:jira-work, read:attachment)")
+        print(" [5] Read Synced Ticket")
+        print("     ↳ Required: read:me (decrypting needs a working login)")
         print(" [0] Exit")
         print("=" * 75)
 
-        choice = input("👉 Select action (0-4): ").strip()
+        choice = input("👉 Select action (0-5): ").strip()
 
         if choice == "1":
             handle_sync_ticket()
@@ -323,11 +336,13 @@ def main() -> None:
         elif choice == "4":
             handle_run_mcp_server()
             break
+        elif choice == "5":
+            handle_read_ticket()
         elif choice in ("0", "exit", "quit", "q"):
             print("\n👋 Goodbye!\n")
             break
         else:
-            print("[!] Invalid option. Please select a number between 0 and 4.")
+            print("[!] Invalid option. Please select a number between 0 and 5.")
 
 
 if __name__ == "__main__":

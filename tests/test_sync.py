@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -7,14 +8,18 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+from cryptography.fernet import Fernet
 
 from core.adf_parser import adf_to_markdown
 import core.config as config_module
 from core.config import JiraConfig, load_config
-from core.indexer import register_ticket, list_indexed_tickets, _read_catalog
+from core.indexer import list_indexed_tickets
 from core.jira_client import JiraClient, JiraApiError
-from core.sync_service import FRONTMATTER_KEYS, SyncService, _format_ticket_markdown, extract_issue_key
+from core.sync_service import (
+    FRONTMATTER_KEYS, SyncService, _format_ticket_markdown, extract_issue_key, read_synced_file,
+)
 
 
 class TestAdfParser(unittest.TestCase):
@@ -108,38 +113,37 @@ class TestAdfParser(unittest.TestCase):
         self.assertEqual(rendered, "![screenshot.png](assets/screenshot.png)")
 
 
-class TestSyncServiceWithMock(unittest.TestCase):
+class _TempAiContext(unittest.TestCase):
+    """A temp .ai-context/ with a fresh key, and a Jira login that succeeds unless a test says otherwise."""
+
     def setUp(self):
         self.test_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.test_dir, True)
+        self.key = Fernet.generate_key().decode("ascii")
+        self.fernet = Fernet(self.key)
         self.config = JiraConfig(
             base_url="https://test.atlassian.net",
             email="tester@example.com",
             api_token="dummy-token",
             max_asset_size_mb=5,
+            ai_context_key=self.key,
         )
-        # JiraClient resolves cloudId over HTTP in __init__; tests never touch the network
+        # JiraClient resolves cloudId over HTTP in __init__, and the access gate calls verify_account: no network in tests
         patch.object(JiraClient, "_resolve_cloud_id", return_value=None).start()
+        self.verify = patch.object(JiraClient, "verify_account", return_value={"displayName": "Tester"}).start()
+        patch("core.sync_service.TICKETS_DIR", self.test_dir / "tickets").start()
+        patch("core.indexer.CATALOG_FILE", self.test_dir / "catalog.json.enc").start()
         self.addCleanup(patch.stopall)
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir, ignore_errors=True)
+    def _all_bytes(self) -> bytes:
+        return b"".join(p.read_bytes() for p in self.test_dir.rglob("*") if p.is_file())
 
-    @patch("core.sync_service.TICKETS_DIR")
-    @patch("core.indexer.INDEX_FILE")
-    @patch("core.indexer.CATALOG_FILE")
+
+class TestSyncServiceWithMock(_TempAiContext):
     @patch.object(JiraClient, "get_issue")
     @patch.object(JiraClient, "download_attachment")
-    def test_full_sync_flow(
-        self, mock_download, mock_get_issue, mock_catalog_file, mock_index_file, mock_tickets_dir
-    ):
-        mock_tickets_dir.__truediv__.side_effect = lambda key: self.test_dir / "tickets" / key
-        mock_index_file.parent = self.test_dir
-        mock_index_file.write_text = MagicMock()
-        mock_catalog_file.parent = self.test_dir
-        mock_catalog_file.exists.return_value = False
-        mock_catalog_file.write_text = MagicMock()
-
-        mock_download.return_value = True
+    def test_full_sync_flow(self, mock_download, mock_get_issue):
+        mock_download.return_value = b"PNG-SECRET-PIXELS"
 
         mock_get_issue.return_value = {
             "key": "DEMO-101",
@@ -188,44 +192,61 @@ class TestSyncServiceWithMock(unittest.TestCase):
         self.assertEqual(result.key, "DEMO-101")
         self.assertEqual(result.assets_downloaded, 1)
 
-        # Check that ticket.md and history.md were created
-        ticket_file = self.test_dir / "tickets" / "DEMO-101" / "ticket.md"
-        history_file = self.test_dir / "tickets" / "DEMO-101" / "history.md"
+        ticket_dir = self.test_dir / "tickets" / "DEMO-101"
+        self.assertEqual(
+            sorted(p.relative_to(self.test_dir).as_posix() for p in self.test_dir.rglob("*") if p.is_file()),
+            ["catalog.json.enc", "tickets/DEMO-101/assets/crash-trace.png.enc",
+             "tickets/DEMO-101/history.md.enc", "tickets/DEMO-101/ticket.md.enc"],
+        )
+        # Nothing readable on disk: no ticket text, no people, no image bytes
+        on_disk = self._all_bytes()
+        for secret in (b"Fix authentication", b"token expires", b"Alex Taylor", b"PNG-SECRET-PIXELS"):
+            self.assertNotIn(secret, on_disk)
 
-        self.assertTrue(ticket_file.exists())
-        self.assertTrue(history_file.exists())
-
-        ticket_content = ticket_file.read_text(encoding="utf-8")
+        ticket_content = read_synced_file("DEMO-101", "ticket.md", self.fernet).decode("utf-8")
         self.assertIn("DEMO-101", ticket_content)
         self.assertIn("Fix authentication crash on mobile", ticket_content)
         self.assertIn("App crashes when token expires.", ticket_content)
         self.assertIn("assets/crash-trace.png", ticket_content)
 
-        history_content = history_file.read_text(encoding="utf-8")
+        history_content = read_synced_file("DEMO-101", "history.md", self.fernet).decode("utf-8")
         self.assertIn("Alex Taylor", history_content)
         self.assertIn("`Open` ➔ `In Progress`", history_content)
 
-    @patch("core.sync_service.TICKETS_DIR")
-    @patch("core.indexer.INDEX_FILE")
-    @patch("core.indexer.CATALOG_FILE")
+        self.assertEqual(read_synced_file("DEMO-101", "assets/crash-trace.png", self.fernet), b"PNG-SECRET-PIXELS")
+        self.assertEqual([t["key"] for t in list_indexed_tickets(self.fernet)], ["DEMO-101"])
+        self.assertEqual(ticket_dir.name, result.ticket_file.parent.name)
+
+    def test_sync_refuses_without_access(self):
+        # No key, or a Jira login that fails right now: nothing is fetched or written
+        with patch.object(JiraClient, "get_issue") as mock_get_issue:
+            self.config.ai_context_key = ""
+            result = SyncService(self.config).sync("DEMO-101")
+            self.assertFalse(result.success)
+            self.assertTrue(result.message.startswith("No access"), result.message)
+
+            self.config.ai_context_key = self.key
+            self.verify.side_effect = JiraApiError(401, "Unauthorized")
+            result = SyncService(self.config).sync("DEMO-101")
+            self.assertTrue(result.message.startswith("No access"), result.message)
+            mock_get_issue.assert_not_called()
+        self.assertFalse(self.test_dir.joinpath("tickets").exists())
+
     @patch.object(JiraClient, "get_issue")
     @patch.object(JiraClient, "download_attachment")
-    def test_sync_purges_obsolete_assets(
-        self, mock_download, mock_get_issue, mock_catalog_file, mock_index_file, mock_tickets_dir
-    ):
-        mock_tickets_dir.__truediv__.side_effect = lambda key: self.test_dir / "tickets" / key
-        mock_index_file.parent = self.test_dir
-        mock_index_file.write_text = MagicMock()
-        mock_catalog_file.parent = self.test_dir
-        mock_catalog_file.exists.return_value = False
-        mock_catalog_file.write_text = MagicMock()
-        mock_download.side_effect = lambda url, dest: dest.write_text("new content") or True
+    def test_sync_purges_obsolete_assets(self, mock_download, mock_get_issue):
+        mock_download.return_value = b"new content"
 
-        # Pre-populate assets dir with an obsolete asset
-        assets_dir = self.test_dir / "tickets" / "DEMO-101" / "assets"
+        # Pre-populate with an obsolete encrypted asset and plaintext files from before encryption
+        ticket_dir = self.test_dir / "tickets" / "DEMO-101"
+        assets_dir = ticket_dir / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
-        old_file = assets_dir / "obsolete-photo.png"
-        old_file.write_text("old content")
+        old_file = assets_dir / "obsolete-photo.png.enc"
+        old_file.write_bytes(self.fernet.encrypt(b"old content"))
+        legacy = [assets_dir / "new-photo.png", ticket_dir / "ticket.md", ticket_dir / "history.md",
+                  self.test_dir / "catalog.json", self.test_dir / "INDEX.md"]
+        for f in legacy:
+            f.write_text("plaintext from an older version", encoding="utf-8")
 
         mock_get_issue.return_value = {
             "key": "DEMO-101",
@@ -247,7 +268,9 @@ class TestSyncServiceWithMock(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertFalse(old_file.exists(), "Obsolete asset should be purged")
-        self.assertTrue((assets_dir / "new-photo.png").exists(), "Active asset should exist")
+        self.assertTrue((assets_dir / "new-photo.png.enc").exists(), "Active asset should exist")
+        for f in legacy:
+            self.assertFalse(f.exists(), f"Plaintext {f.name} should be removed")
 
     @patch.object(JiraClient, "get_issue")
     def test_sync_error_handling(self, mock_get_issue):
@@ -257,18 +280,8 @@ class TestSyncServiceWithMock(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Ticket not found", result.message)
 
-    @patch("core.sync_service.TICKETS_DIR")
-    @patch("core.indexer.INDEX_FILE")
-    @patch("core.indexer.CATALOG_FILE")
     @patch.object(JiraClient, "get_issue")
-    def test_sync_key_from_url(self, mock_get_issue, mock_catalog_file, mock_index_file, mock_tickets_dir):
-        mock_tickets_dir.__truediv__.side_effect = lambda key: self.test_dir / "tickets" / key
-        mock_index_file.parent = self.test_dir
-        mock_index_file.write_text = MagicMock()
-        mock_catalog_file.parent = self.test_dir
-        mock_catalog_file.exists.return_value = False
-        mock_catalog_file.write_text = MagicMock()
-
+    def test_sync_key_from_url(self, mock_get_issue):
         mock_get_issue.return_value = {
             "key": "DEMO-102",
             "fields": {"summary": "Analyze export preferences"},
@@ -277,6 +290,73 @@ class TestSyncServiceWithMock(unittest.TestCase):
         service = SyncService(self.config)
         result = service.sync("https://test.atlassian.net/browse/DEMO-102")
         self.assertEqual(result.key, "DEMO-102")
+
+
+class TestReadTools(_TempAiContext):
+    """jira_read_ticket / jira_read_asset / jira_list_synced: decrypt only behind the access gate (docs/FEATURES.md F7, F8)."""
+
+    def setUp(self):
+        super().setUp()
+        patch("server.load_config", return_value=self.config).start()
+        with patch.object(JiraClient, "get_issue") as mock_get_issue, \
+                patch.object(JiraClient, "download_attachment", return_value=b"PNG-SECRET-PIXELS"):
+            mock_get_issue.return_value = {
+                "key": "DEMO-7",
+                "fields": {
+                    "summary": "Export report as CSV",
+                    "attachment": [{"filename": "mock.png", "mimeType": "image/png", "content": "https://test.atlassian.net/att/1"}],
+                },
+                "changelog": {"histories": []},
+            }
+            self.assertTrue(SyncService(self.config).sync("DEMO-7").success)
+
+    def _call(self, tool, **args):
+        import server
+
+        try:
+            from mcp.server import MCPServer
+        except ImportError:
+            from mcp.server.fastmcp import FastMCP as MCPServer
+        app = MCPServer("parent")
+        server.register_jira_tools(app, prefix="x_")
+        result = asyncio.run(app.call_tool(f"x_{tool}", args))
+        content = getattr(result, "content", result)  # mcp 2.x CallToolResult; mcp 1.x content list or (content, structured)
+        if isinstance(content, tuple):
+            content = content[0]
+        return content
+
+    def test_read_ticket_returns_decrypted_markdown(self):
+        (block,) = self._call("jira_read_ticket", issue_key="demo-7")
+        self.assertTrue(block.text.startswith("✅ DEMO-7"))
+        self.assertIn("Export report as CSV", block.text)
+        self.assertIn("assets/mock.png", block.text)
+        self.assertIn("Change History", block.text)
+
+    def test_read_asset_returns_image(self):
+        (block,) = self._call("jira_read_asset", issue_key="DEMO-7", filename="assets/mock.png")
+        image = block.model_dump(by_alias=True)  # mimeType on the wire in mcp 1.x and 2.x
+        self.assertEqual(image["type"], "image")
+        self.assertEqual(image["mimeType"], "image/png")
+        self.assertEqual(base64.b64decode(image["data"]), b"PNG-SECRET-PIXELS")
+
+    def test_reads_refused_without_access(self):
+        import server
+
+        self.verify.side_effect = JiraApiError(401, "Unauthorized")
+        for reply in (server.jira_read_ticket("DEMO-7"), server.jira_list_synced(),
+                      server.jira_read_asset("DEMO-7", "mock.png")):
+            self.assertTrue(reply.startswith("❌ No access"), reply)
+        self.verify.side_effect = None
+        self.config.ai_context_key = Fernet.generate_key().decode("ascii")  # someone else's key
+        self.assertTrue(server.jira_read_ticket("DEMO-7").startswith("❌ No access"))
+
+    def test_read_rejects_paths_outside_the_ticket(self):
+        import server
+
+        self.assertTrue(server.jira_read_asset("DEMO-7", "../ticket.md").startswith("❌ Not an image"))
+        self.assertTrue(server.jira_read_asset("DEMO-7", "../../DEMO-8/assets/x.png").startswith("❌"))
+        self.assertIn("Call jira_sync_ticket first", server.jira_read_ticket("DEMO-8"))
+        self.assertTrue(server.jira_read_ticket("hello").startswith("❌ Invalid ticket key"))
 
 
 class TestContracts(unittest.TestCase):
@@ -326,14 +406,21 @@ class TestContracts(unittest.TestCase):
             encoding="utf-8",
         )
         central = tmp / "central.json"
-        central.write_text(json.dumps({"jira": {"email": "central@x", "api_token": "central-token"}}), encoding="utf-8")
+        central.write_text(
+            json.dumps({"jira": {"email": "central@x", "api_token": "central-token", "ai_context_key": "central-key"}}),
+            encoding="utf-8",
+        )
         clean = self._env_without_jira()
         clean.update({"CENTRAL_CONFIG_PATH": str(central), "JIRA_API_TOKEN": "env-token"})
         with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, clean, clear=True):
             cfg = load_config()
+            with patch.dict(os.environ, {"JIRA_AI_CONTEXT_KEY": "env-key"}):
+                env_key = load_config().ai_context_key
         self.assertEqual(cfg.api_token, "env-token")  # process env wins
         self.assertEqual(cfg.email, "central@x")  # central beats .env
         self.assertEqual(cfg.base_url, "https://dotenv.atlassian.net")  # .env is the fallback
+        self.assertEqual(cfg.ai_context_key, "central-key")
+        self.assertEqual(env_key, "env-key")
 
     @staticmethod
     def _env_without_jira():
@@ -359,12 +446,17 @@ class TestContracts(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, True)
         env_file = tmp / ".env"
         env_file.write_text("AI_CONTEXT_DIR=<WORKSPACE>/.ai-context\n", encoding="utf-8")
-        with patch.object(config_module, "ENV_FILE", env_file):
+        with patch.object(config_module, "ENV_FILE", env_file), \
+                patch.dict(os.environ, self._env_without_jira(), clear=True):
             config_module.save_config("https://x.atlassian.net/", "e@x", "tok")
             values = config_module._local_env()
+            config_module.save_config("https://x.atlassian.net/", "other@x", "tok2")  # switching account keeps the key
+            again = config_module._local_env()
         self.assertEqual(values["AI_CONTEXT_DIR"], "<WORKSPACE>/.ai-context")
         self.assertEqual(values["JIRA_BASE_URL"], "https://x.atlassian.net")
         self.assertEqual(values["JIRA_API_TOKEN"], "tok")
+        Fernet(values["JIRA_AI_CONTEXT_KEY"])  # first login writes a valid key
+        self.assertEqual(again["JIRA_AI_CONTEXT_KEY"], values["JIRA_AI_CONTEXT_KEY"])
 
     def test_tools_mount_with_prefix(self):
         import server  # must not exit or start anything on import
@@ -376,11 +468,17 @@ class TestContracts(unittest.TestCase):
         app = MCPServer("parent")
         server.register_jira_tools(app, prefix="x_")
         tools = {t.name: t for t in asyncio.run(app.list_tools())}
-        self.assertEqual(set(tools), {"x_jira_sync_ticket", "x_jira_list_synced", "x_jira_check_connection"})
+        self.assertEqual(set(tools), {
+            "x_jira_sync_ticket", "x_jira_read_ticket", "x_jira_read_asset", "x_jira_list_synced", "x_jira_check_connection",
+        })
         hints = {name: t.annotations.model_dump(by_alias=True) for name, t in tools.items()}  # camelCase in mcp 1.x and 2.x
         self.assertFalse(hints["x_jira_sync_ticket"]["readOnlyHint"])
-        self.assertTrue(hints["x_jira_list_synced"]["readOnlyHint"])
-        self.assertIn("x_jira_sync_ticket", server.jira_instructions("x_"))
+        for name in ("x_jira_read_ticket", "x_jira_read_asset", "x_jira_list_synced", "x_jira_check_connection"):
+            self.assertTrue(hints[name]["readOnlyHint"], name)
+            self.assertTrue(hints[name]["openWorldHint"], name)  # every read logs in to Jira first
+        instructions = server.jira_instructions("x_")
+        for name in ("x_jira_sync_ticket", "x_jira_read_ticket", "x_jira_read_asset", "No access"):
+            self.assertIn(name, instructions)
 
 
 class TestPublicRepoHygiene(unittest.TestCase):

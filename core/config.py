@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from dataclasses import dataclass
@@ -29,8 +30,7 @@ AI_CONTEXT_DIR = Path(
     os.getenv("AI_CONTEXT_DIR") or _local_env().get("AI_CONTEXT_DIR") or BASE_DIR / ".ai-context"
 ).expanduser().resolve()
 TICKETS_DIR = AI_CONTEXT_DIR / "tickets"
-INDEX_FILE = AI_CONTEXT_DIR / "INDEX.md"
-CATALOG_FILE = AI_CONTEXT_DIR / "catalog.json"
+CATALOG_FILE = AI_CONTEXT_DIR / "catalog.json.enc"
 
 # Project Permission Scheme Keys (Internal Jira Permissions)
 REQUIRED_PERMISSIONS: List[Dict[str, str]] = [
@@ -57,6 +57,7 @@ class JiraConfig:
     email: str
     api_token: str
     max_asset_size_mb: int = 15
+    ai_context_key: str = ""  # Fernet key for .ai-context/ (core/vault.py); a secret like api_token
 
     @property
     def is_configured(self) -> bool:
@@ -106,17 +107,24 @@ def load_config() -> JiraConfig:
         email=email,
         api_token=api_token,
         max_asset_size_mb=max_size,
+        ai_context_key=pick("JIRA_AI_CONTEXT_KEY", "ai_context_key"),
     )
 
 
 def save_config(base_url: str, email: str, api_token: str, max_asset_size_mb: int = 15) -> None:
-    """Persists credentials into local .env, keeping any other lines (AI_CONTEXT_DIR, CENTRAL_CONFIG_PATH, comments)."""
+    """Persists credentials into local .env, keeping any other lines (AI_CONTEXT_DIR, CENTRAL_CONFIG_PATH, comments).
+
+    Adds a new JIRA_AI_CONTEXT_KEY only when no source (env, central JSON, .env) has one, so an existing key is never replaced.
+    """
     values = {
         "JIRA_BASE_URL": base_url.strip().rstrip("/"),
         "JIRA_EMAIL": email.strip(),
         "JIRA_API_TOKEN": api_token.strip(),
         "MAX_ASSET_SIZE_MB": str(max_asset_size_mb),
     }
+    if not load_config().ai_context_key:
+        # Same bytes as Fernet.generate_key(); kept here so config.py stays free of the cipher
+        values["JIRA_AI_CONTEXT_KEY"] = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
 
     try:
         ENV_FILE.touch(exist_ok=True)

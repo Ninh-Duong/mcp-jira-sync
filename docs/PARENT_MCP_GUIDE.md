@@ -18,9 +18,9 @@ The child is launched as `python <JIRA_SYNC_PATH>/server.py`. Inject configurati
 
 | Env | Purpose |
 |---|---|
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | credentials, or instead… |
-| `CENTRAL_CONFIG_PATH` | …a hub-wide secrets JSON with a `jira` object |
-| `AI_CONTEXT_DIR` | where tickets are written; set it to the workspace the agent works in |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_AI_CONTEXT_KEY` | credentials and the encryption key, or instead… |
+| `CENTRAL_CONFIG_PATH` | …a hub-wide secrets JSON with a `jira` object (`ai_context_key` next to `api_token`) |
+| `AI_CONTEXT_DIR` | where the encrypted tickets are written (default `<JIRA_SYNC_PATH>/.ai-context`; agents read through the tools, so it need not be in their workspace) |
 | `MAX_ASSET_SIZE_MB` | optional image cap |
 | `PYTHON_DOTENV_DISABLED` | `1` to ignore the child's own `.env` (recommended for hubs) |
 
@@ -34,16 +34,17 @@ const transport = new StdioClientTransport({
   args: ['<JIRA_SYNC_PATH>/server.py'],
   env: {
     ...process.env,
-    CENTRAL_CONFIG_PATH: '<HUB_SECRETS_JSON>',   // {"jira": {"base_url": …, "email": …, "api_token": …}}
-    AI_CONTEXT_DIR: '<WORKSPACE>/.ai-context',
+    CENTRAL_CONFIG_PATH: '<HUB_SECRETS_JSON>',   // {"jira": {"base_url": …, "email": …, "api_token": …, "ai_context_key": …}}
+    PYTHON_DOTENV_DISABLED: '1',
   },
 });
 const jira = new Client({ name: 'hub', version: '1.0.0' });
 await jira.connect(transport);
 
-const { tools } = await jira.listTools();              // jira_sync_ticket, jira_list_synced, jira_check_connection
+const { tools } = await jira.listTools();   // jira_sync_ticket, jira_read_ticket, jira_read_asset, jira_list_synced, jira_check_connection
 const instructions = jira.getInstructions();           // forward into the hub's own instructions
-const res = await jira.callTool({ name: 'jira_sync_ticket', arguments: { issue_key: 'PROJ-123' } });
+await jira.callTool({ name: 'jira_sync_ticket', arguments: { issue_key: 'PROJ-123' } });
+const ticket = await jira.callTool({ name: 'jira_read_ticket', arguments: { issue_key: 'PROJ-123' } });
 ```
 
 Python hub (mcp SDK client):
@@ -55,17 +56,20 @@ from mcp.client.stdio import stdio_client
 params = StdioServerParameters(
     command=sys.executable,
     args=["<JIRA_SYNC_PATH>/server.py"],
-    env={**os.environ, "AI_CONTEXT_DIR": "<WORKSPACE>/.ai-context"},   # pass os.environ: the SDK default env is minimal
+    env={**os.environ, "CENTRAL_CONFIG_PATH": "<HUB_SECRETS_JSON>"},   # pass os.environ: the SDK default env is minimal
 )
 async with stdio_client(params) as (r, w), ClientSession(r, w) as session:
     init = await session.initialize()          # init.instructions = jira_instructions()
-    result = await session.call_tool("jira_sync_ticket", {"issue_key": "PROJ-123"})
+    await session.call_tool("jira_sync_ticket", {"issue_key": "PROJ-123"})
+    ticket = await session.call_tool("jira_read_ticket", {"issue_key": "PROJ-123"})
 ```
 
 Notes:
 - The child's stderr carries its logs; its `logs/app.log` stays in the child's folder.
 - Run `python <JIRA_SYNC_PATH>/utils/env_check.py` once at hub install time; on a missing dependency the child exits 1 with the reason on stderr.
-- Credentials can't be entered through MCP. If `jira_check_connection` reports "not configured", the hub must provide env / the central file, or the user runs `python cli.py` in the child folder.
+- Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder. The child never writes a key itself, so with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it.
+- Read-only hubs: `jira_sync_ticket` is the only tool with `readOnlyHint: false`. A user asking to "read PROJ-123" is asking for that write; the three read tools and `jira_check_connection` are read-only.
+- `jira_read_asset` returns an MCP **image** block; a hub that re-exposes results must pass non-text content through.
 
 ---
 
@@ -73,7 +77,7 @@ Notes:
 
 ```python
 import os, sys
-os.environ.setdefault("AI_CONTEXT_DIR", "<WORKSPACE>/.ai-context")   # read once at import: set it first
+os.environ.setdefault("CENTRAL_CONFIG_PATH", "<HUB_SECRETS_JSON>")   # credentials + ai_context_key
 sys.path.insert(0, "<JIRA_SYNC_PATH>")
 
 from mcp.server import MCPServer          # mcp 1.x: from mcp.server.fastmcp import FastMCP
@@ -98,13 +102,15 @@ hub.run(transport="stdio")
 
 ```python
 from core.config import JiraConfig
-from core.sync_service import SyncService
+from core.sync_service import SyncService, read_synced_file
+from core.vault import unlock
 
-result = SyncService(JiraConfig(base_url=..., email=..., api_token=...)).sync("PROJ-123")
+config = JiraConfig(base_url=..., email=..., api_token=..., ai_context_key=...)
+result = SyncService(config).sync("PROJ-123")
 if result.success:
-    print(result.ticket_file, result.history_file, result.assets_downloaded)
+    ticket_md = read_synced_file("PROJ-123", "ticket.md", unlock(config)).decode("utf-8")  # NoAccessError if gated out
 else:
     print(result.message)       # never raises
 ```
 
-`SyncService()` without arguments uses `load_config()`. Output layout: [AI_CONTEXT_FORMAT.md](AI_CONTEXT_FORMAT.md).
+`SyncService()` without arguments uses `load_config()`. Output layout and encryption: [AI_CONTEXT_FORMAT.md](AI_CONTEXT_FORMAT.md).

@@ -9,6 +9,7 @@ from core.adf_parser import adf_to_markdown
 from core.config import JiraConfig, TICKETS_DIR, load_config
 from core.indexer import register_ticket
 from core.jira_client import JiraClient, JiraApiError
+from core.vault import ENC_SUFFIX, NoAccessError, read_encrypted, unlock, write_encrypted
 from utils.logger import get_logger
 
 logger = get_logger("sync_service")
@@ -54,6 +55,24 @@ def extract_issue_key(text: str) -> Optional[str]:
     if not match:
         return None
     return (match.group(1) if match.groups() else match.group(0)).upper()
+
+
+def read_synced_file(issue_key: str, name: str, fernet) -> bytes:
+    """Decrypts tickets/<KEY>/<name>.enc, where name is 'ticket.md', 'history.md' or 'assets/<file>'.
+
+    Raises ValueError for a bad key or a name that leaves the ticket folder, FileNotFoundError when not synced,
+    NoAccessError when the file does not decrypt.
+    """
+    key = extract_issue_key(issue_key)
+    if not key:
+        raise ValueError(f"Invalid ticket key: '{issue_key}'. Expected PROJECT-123 or a Jira /browse/PROJECT-123 URL.")
+    ticket_dir = (TICKETS_DIR / key).resolve()
+    path = (ticket_dir / f"{name}{ENC_SUFFIX}").resolve()
+    if ticket_dir not in path.parents:
+        raise ValueError(f"Invalid file name: '{name}'.")
+    if not path.is_file():
+        raise FileNotFoundError(f"{key} has no synced '{name}'. Call jira_sync_ticket first.")
+    return read_encrypted(path, fernet)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -205,6 +224,9 @@ class SyncService:
         logger.info(f"Starting sync workflow for {key}")
 
         try:
+            # 0. Access gate: nothing is written unless the key is set and the Jira login works
+            fernet = unlock(self.config)
+
             # 1. Fetch issue payload
             issue_data = self.client.get_issue(key)
             fields = issue_data.get("fields", {})
@@ -238,16 +260,16 @@ class SyncService:
                 content_url = att.get("content", "")
 
                 if mime_type in IMAGE_MIME_TYPES:
-                    dest_file = assets_dir / filename
-                    ok = self.client.download_attachment(content_url, dest_file)
-                    if ok:
+                    data = self.client.download_attachment(content_url, filename)
+                    if data is not None:
+                        write_encrypted(assets_dir / f"{filename}{ENC_SUFFIX}", data, fernet)
                         downloaded_images.append({"filename": filename, "mime": mime_type})
                 else:
                     other_files.append(att)
 
-            # Purge obsolete assets no longer present in Jira attachments
+            # Purge obsolete assets no longer present in Jira attachments (and plaintext ones from before encryption)
             valid_asset_names = {
-                _sanitize_filename(att.get("filename", "asset"))
+                _sanitize_filename(att.get("filename", "asset")) + ENC_SUFFIX
                 for att in attachments
                 if att.get("mimeType", "").lower() in IMAGE_MIME_TYPES
             }
@@ -292,8 +314,8 @@ class SyncService:
                 relations=relations,
             )
 
-            ticket_file = ticket_dir / "ticket.md"
-            ticket_file.write_text(ticket_md_content, encoding="utf-8")
+            ticket_file = ticket_dir / f"ticket.md{ENC_SUFFIX}"
+            write_encrypted(ticket_file, ticket_md_content.encode("utf-8"), fernet)
             logger.info(f"Wrote ticket markdown: {ticket_file}")
 
             # 7. Build and write history.md (changelog)
@@ -301,11 +323,15 @@ class SyncService:
             histories = changelog_data.get("histories", [])
             history_md_content = _format_history_markdown(key, summary, histories)
 
-            history_file = ticket_dir / "history.md"
-            history_file.write_text(history_md_content, encoding="utf-8")
+            history_file = ticket_dir / f"history.md{ENC_SUFFIX}"
+            write_encrypted(history_file, history_md_content.encode("utf-8"), fernet)
             logger.info(f"Wrote history changelog: {history_file} ({len(histories)} entries)")
 
-            # 8. Register in INDEX.md and catalog.json
+            # Plaintext copies written before encryption existed
+            for legacy in ("ticket.md", "history.md"):
+                (ticket_dir / legacy).unlink(missing_ok=True)
+
+            # 8. Register in the encrypted catalog
             index_meta = {
                 "key": key,
                 "summary": summary,
@@ -317,11 +343,11 @@ class SyncService:
                 "synced_at": datetime.now(timezone.utc).isoformat(),
                 "assets_count": len(downloaded_images),
                 "history_count": len(histories),
-                "ticket_path": f"tickets/{key}/ticket.md",
-                "history_path": f"tickets/{key}/history.md",
+                "ticket_path": f"tickets/{key}/ticket.md{ENC_SUFFIX}",
+                "history_path": f"tickets/{key}/history.md{ENC_SUFFIX}",
                 "labels": labels,
             }
-            register_ticket(index_meta)
+            register_ticket(index_meta, fernet)
 
             success_msg = (
                 f"Successfully synced ticket {key} to {ticket_file.relative_to(ticket_dir.parent.parent)} "
@@ -337,7 +363,7 @@ class SyncService:
                 message=success_msg,
             )
 
-        except JiraApiError as e:
+        except (JiraApiError, NoAccessError) as e:
             logger.error(f"Jira API error while syncing {key}: {e}", exc_info=True)
             return SyncResult(success=False, key=key, message=str(e))
         except Exception as e:
