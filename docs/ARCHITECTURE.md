@@ -97,7 +97,7 @@ Auth: `Authorization: Basic base64(email:token)`. The token is never logged.
 
 - `BASE_DIR` = repo root (from `__file__`). `.env` and `logs/` always live there.
 - `AI_CONTEXT_DIR`: env > `.env` > `<repo>/.ai-context`, resolved once at import. See [AI_CONTEXT_FORMAT.md](AI_CONTEXT_FORMAT.md#1-location).
-- Credentials and `JIRA_AI_CONTEXT_KEY`: `load_config()` is called per tool call (not cached), so a CLI login takes effect immediately. Priority and the central file: [JIRA_ACCESS.md](JIRA_ACCESS.md#3-configuration-sources-and-priority).
+- Credentials and `JIRA_AI_CONTEXT_KEY`: `load_config()` is called per tool call (not cached), so a CLI login takes effect immediately. Priority (env > central JSON > `.env`, per value; a relative `CENTRAL_CONFIG_PATH` resolves against `BASE_DIR`) and the per-field `sources`: [JIRA_ACCESS.md](JIRA_ACCESS.md#3-configuration-sources-and-priority).
 
 ## 5. Process model
 

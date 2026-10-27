@@ -422,13 +422,80 @@ class TestContracts(unittest.TestCase):
         self.assertEqual(cfg.ai_context_key, "central-key")
         self.assertEqual(env_key, "env-key")
 
+    def test_config_sources_per_field(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = tmp / ".env"
+        env_file.write_text("JIRA_BASE_URL=https://dotenv.atlassian.net\nJIRA_AI_CONTEXT_KEY=local-key\n", encoding="utf-8")
+        central = tmp / "central.json"
+        central.write_text(json.dumps({"jira": {"email": "hub@x", "api_token": "", "base_url": " "}}), encoding="utf-8")
+        clean = {**self._env_without_jira(), "CENTRAL_CONFIG_PATH": str(central), "JIRA_API_TOKEN": "env-token"}
+        with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, clean, clear=True):
+            cfg = load_config()
+        self.assertEqual(cfg.sources, {
+            "base_url": "local",  # a blank hub value counts as unset
+            "email": "hub",
+            "api_token": "env",
+            "max_asset_size_mb": "unset",
+            "ai_context_key": "local",
+        })
+        self.assertEqual(
+            config_module.format_sources(cfg), "base_url=local, email=hub, api_token=env, ai_context_key=local"
+        )
+
+    def test_relative_central_path_resolves_against_base_dir(self):
+        root = Path(tempfile.mkdtemp())
+        other = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        self.addCleanup(shutil.rmtree, other, True)
+        (root / "hub").mkdir()
+        (root / "hub" / "jira.json").write_text(json.dumps({"jira": {"email": "hub@x"}}), encoding="utf-8")
+        clean = {**self._env_without_jira(), "CENTRAL_CONFIG_PATH": "hub/jira.json"}
+        cwd = os.getcwd()
+        os.chdir(other)  # the hub launches us from another directory
+        self.addCleanup(os.chdir, cwd)
+        with patch.object(config_module, "BASE_DIR", root), patch.object(config_module, "ENV_FILE", root / ".env"),                 patch.dict(os.environ, clean, clear=True):
+            cfg = load_config()
+        self.assertEqual(cfg.email, "hub@x")
+        self.assertEqual(cfg.sources["email"], "hub")
+
+    def test_missing_central_file_warns_and_falls_back_to_dotenv(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env_file = tmp / ".env"
+        env_file.write_text("JIRA_EMAIL=dotenv@x\n", encoding="utf-8")
+        clean = {**self._env_without_jira(), "CENTRAL_CONFIG_PATH": str(tmp / "missing.json")}
+        with patch.object(config_module, "ENV_FILE", env_file), patch.dict(os.environ, clean, clear=True),                 self.assertLogs(config_module.logger, "WARNING") as logs:
+            cfg = load_config()
+        self.assertIn("does not exist", "\n".join(logs.output))
+        self.assertNotIn("missing.json", "\n".join(logs.output))
+        self.assertEqual(cfg.email, "dotenv@x")
+        self.assertEqual(cfg.sources["email"], "local")
+
+    def test_check_connection_reports_sources(self):
+        import server
+
+        cfg = JiraConfig(
+            base_url="https://x.atlassian.net", email="e@x", api_token="secret-token", ai_context_key="secret-key",
+            sources={"base_url": "hub", "email": "hub", "api_token": "hub", "ai_context_key": "local"},
+        )
+        with patch.object(server, "load_config", return_value=cfg),                 patch.object(JiraClient, "_resolve_cloud_id", return_value=None),                 patch.object(JiraClient, "verify_account", return_value={"displayName": "Tester", "emailAddress": "e@x"}):
+            text = server.jira_check_connection()
+        self.assertTrue(text.startswith("✅"))  # mcp-hub's smoke check relies on this prefix
+        self.assertIn("Config source: base_url=hub, email=hub, api_token=hub, ai_context_key=local", text)
+        self.assertNotIn("secret", text)
+        with patch.object(server, "load_config", return_value=JiraConfig("", "", "")):
+            missing = server.jira_check_connection()
+        self.assertIn("CENTRAL_CONFIG_PATH", missing)
+        self.assertIn(".env", missing)
+
     @staticmethod
     def _env_without_jira():
         skip = {"CENTRAL_CONFIG_PATH", "PYTHON_DOTENV_DISABLED"}
         return {k: v for k, v in os.environ.items() if not k.startswith("JIRA_") and k not in skip}
 
-    def test_dotenv_ignored_when_disabled_by_hub(self):
-        # mcp-hub launches the child with PYTHON_DOTENV_DISABLED=1: the standalone .env must not leak into hub runs
+    def test_dotenv_ignored_when_disabled(self):
+        # Manual opt-out: PYTHON_DOTENV_DISABLED=1 keeps the standalone .env out of a run (the hub no longer sets it)
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         env_file = tmp / ".env"

@@ -37,7 +37,7 @@ For standalone use from the clone, run `uv run --locked python server.py` over s
 | `jira_read_ticket(issue_key)` | returns the decrypted `ticket.md` + `history.md` |
 | `jira_read_asset(issue_key, filename)` | returns one screenshot as an image |
 | `jira_list_synced()` | lists synced tickets |
-| `jira_check_connection()` | checks credentials and shows the user |
+| `jira_check_connection()` | checks credentials, shows the user and where each value came from (`Config source: …`) |
 
 Every tool except `jira_check_connection` passes the access gate first: key set **and** a Jira login that works now, else `❌ No access: …`. Full contract (arguments, annotations): [AGENTS.md §4](../AGENTS.md#4-mcp-tools-reference).
 
@@ -64,7 +64,7 @@ Every file is encrypted: opening one shows only a Fernet token. The format is a 
 
 ## 5. Inside an MCP hub
 
-Spawn `python <JIRA_SYNC_PATH>/server.py` as a stdio child and inject `JIRA_*` / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR`, or mount it in a Python hub with `register_jira_tools(app)`: [PARENT_MCP_GUIDE.md](PARENT_MCP_GUIDE.md). mcp-hub specifics: [README.md](../README.md#running-under-mcp-hub).
+Spawn `python <JIRA_SYNC_PATH>/server.py` as a stdio child and inject `JIRA_*` / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR`, or mount it in a Python hub with `register_jira_tools(app)`: [PARENT_MCP_GUIDE.md](PARENT_MCP_GUIDE.md). Each value: env > the hub's `jira` block > this repo's `.env` (fallback); `jira_check_connection` prints the source of each. mcp-hub specifics: [README.md](../README.md#running-under-mcp-hub).
 
 ## 6. Debugging
 

@@ -66,13 +66,14 @@ Non-goals: no filtering or search parameters until an agent needs them (then add
 |---|---|
 | Entry points | CLI at start (required before the menu) and menu `[3]` · MCP `jira_check_connection()` (check only) |
 | Core | `JiraClient.verify_account`, `check_permissions`, `save_config` |
-| Tests | `TestContracts.test_config_priority_env_then_central_then_dotenv`, `test_save_config_keeps_other_env_lines` |
+| Tests | `TestContracts.test_config_priority_env_then_central_then_dotenv`, `test_config_sources_per_field`, `test_relative_central_path_resolves_against_base_dir`, `test_missing_central_file_warns_and_falls_back_to_dotenv`, `test_check_connection_reports_sources`, `test_save_config_keeps_other_env_lines` |
 
 Rules:
 1. The CLI prints the required permissions and scopes ([JIRA_ACCESS.md](JIRA_ACCESS.md)), asks for URL, email, and token (Enter keeps the saved value), verifies, audits `BROWSE_PROJECTS`, then saves to `.env`, keeping every other line in it. When no source has a `JIRA_AI_CONTEXT_KEY` yet, it also writes a new one (F7); an existing key is never replaced, so switching account keeps old data readable.
 2. A missing `BROWSE_PROJECTS` is a **warning** with a y/n prompt, not a block (the global check can be false while one project still grants access).
 3. The MCP tool never asks for or saves credentials; it tells the agent to have the user run `python cli.py` (standalone; under mcp-hub fix the `jira` block in the Hub private config).
-4. Credential priority: process env > central JSON (`CENTRAL_CONFIG_PATH`) > `.env`.
+4. Credential priority, per value: process env > central JSON (`CENTRAL_CONFIG_PATH`, relative to the repo root) > `.env` > default; empty = unset. A missing or broken central file is a logged warning, then `.env` is used.
+5. The CLI start-up check and `jira_check_connection` (success text still starts with `✅`) report each value's source, `env` | `hub` | `local` | `unset`: names only, never values or the central file path.
 
 Non-goals: no multi-account switching inside the MCP server, no keychain storage.
 
@@ -109,7 +110,7 @@ Purpose: someone who opens the repository or the `.ai-context/` folder sees only
 
 Rules:
 1. Every file under `.ai-context/` is a Fernet token (`cryptography`: AES-128-CBC + HMAC-SHA256, authenticated) named `<name>.enc`. Plaintext never touches the disk: images are encrypted from memory.
-2. The key is `JIRA_AI_CONTEXT_KEY` (process env > central JSON `ai_context_key` > `.env`, the same priority as the token). The CLI writes one at the first login. The server never writes it, so under a hub (`PYTHON_DOTENV_DISABLED=1`) it must be injected.
+2. The key is `JIRA_AI_CONTEXT_KEY` (process env > central JSON `ai_context_key` > `.env`, the same priority as the token). The CLI writes one at the first login. The server never writes it: under a hub it comes from the hub's `ai_context_key`, or from `.env` as the fallback when that is empty (so the CLI and the hub share one key); with `PYTHON_DOTENV_DISABLED=1` it must be injected.
 3. The gate `unlock(config)` passes only when the key is set and valid **and** `verify_account()` succeeds right now. It runs on every sync, read, and list call, with no cache.
 4. A refusal, or a file that fails to decrypt (wrong key, edited file), gives a message starting with `No access:`. Agents are told to stop and send the user to `python cli.py` (standalone; under mcp-hub fix the `jira` block in the Hub private config).
 5. The key and decrypted content are never logged. The log records only the error type of a failed access check.

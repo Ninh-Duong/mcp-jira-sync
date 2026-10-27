@@ -107,7 +107,7 @@ Registered by `register_jira_tools(app, prefix="")`; names below are with an emp
 | `jira_read_ticket` | `issue_key: str` | Decrypted `ticket.md`, a `---` line, then `history.md` | readOnly true, openWorld true (gate) |
 | `jira_read_asset` | `issue_key: str`, `filename: str` (as in `ticket.md`, `assets/` prefix optional) | One image block (base64, `image/png` / `jpeg` / `webp` / `gif`) | readOnly true, openWorld true (gate) |
 | `jira_list_synced` | none | One line per synced ticket: key, summary, status, assignee, `synced_at` | readOnly true, openWorld true (gate) |
-| `jira_check_connection` | none | Base URL and user display name / email, or a configuration hint | readOnly true, openWorld true |
+| `jira_check_connection` | none | Base URL, user display name / email, and `Config source: base_url=…, email=…, api_token=…, ai_context_key=…` (`env`/`hub`/`local`/`unset`), or a configuration hint | readOnly true, openWorld true |
 
 **Server instructions**: `create_server()` sends `jira_instructions()` on connect. On a direct connection it is the only guidance an agent in another repository gets (it never sees this file). mcp-hub does not forward it: it serves its own contract, `../mcp-hub/docs/mcps/mcp-jira-sync.md`. Keep both in sync with this table.
 
@@ -116,7 +116,7 @@ Registered by `register_jira_tools(app, prefix="")`; names below are with an emp
 ## 5. Parent MCP / hub
 
 This server is designed to be a child of an MCP hub:
-- **Subprocess (any hub language)**: spawn `python <PATH>/server.py` over stdio, inject `JIRA_*` (including `JIRA_AI_CONTEXT_KEY`) / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR` as env.
+- **Subprocess (any hub language)**: spawn `python <PATH>/server.py` over stdio, inject `JIRA_*` (including `JIRA_AI_CONTEXT_KEY`) / `CENTRAL_CONFIG_PATH` / `AI_CONTEXT_DIR` as env. Priority per value: env > central `jira` block > this repo's `.env` > default; a relative `CENTRAL_CONFIG_PATH` resolves against the repo root; a missing or broken central file logs a warning and falls back to `.env` ([docs/JIRA_ACCESS.md §3](docs/JIRA_ACCESS.md#3-configuration-sources-and-priority)).
 - **In-process (Python hub)**: `from server import register_jira_tools, jira_instructions`, then `register_jira_tools(hub_app)`. Tool names already start with `jira_`; pass a `prefix` only if the hub has a name clash.
 
 Details and examples: [docs/PARENT_MCP_GUIDE.md](docs/PARENT_MCP_GUIDE.md). Connecting an AI client: [docs/AI_AGENT_SETUP.md](docs/AI_AGENT_SETUP.md). Running under mcp-hub: [README.md](README.md#running-under-mcp-hub). When the launch command, env variables, config keys, or tool names change, update both files in the same change, and also `../mcp-hub/docs/mcps/mcp-jira-sync.md` and `../mcp-hub/config/mcps/mcp-jira-sync.example.json`.

@@ -217,7 +217,7 @@ class SyncService:
             return SyncResult(success=False, key=issue_key.strip(), message=msg)
 
         if not self.config.is_configured:
-            msg = "Jira account not configured. Please set up credentials via CLI or .env file."
+            msg = "Jira account not configured. Set the hub's `jira` block (CENTRAL_CONFIG_PATH) or .env via `python cli.py`."
             logger.error(msg)
             return SyncResult(success=False, key=key, message=msg)
 

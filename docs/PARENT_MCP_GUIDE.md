@@ -19,10 +19,10 @@ The child is launched as `python <JIRA_SYNC_PATH>/server.py`. (Under mcp-hub the
 | Env | Purpose |
 |---|---|
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_AI_CONTEXT_KEY` | credentials and the encryption key, or instead… |
-| `CENTRAL_CONFIG_PATH` | …a hub-wide secrets JSON with a `jira` object (`ai_context_key` next to `api_token`) |
+| `CENTRAL_CONFIG_PATH` | …a hub-wide secrets JSON with a `jira` object (`ai_context_key` next to `api_token`). Relative paths resolve against the child repo root; a missing file logs a warning and the child's `.env` is used |
 | `AI_CONTEXT_DIR` | where the encrypted tickets are written (default `<JIRA_SYNC_PATH>/.ai-context`; agents read through the tools, so it need not be in their workspace) |
 | `MAX_ASSET_SIZE_MB` | optional image cap |
-| `PYTHON_DOTENV_DISABLED` | `1` to ignore the child's own `.env` (recommended for hubs) |
+| `PYTHON_DOTENV_DISABLED` | `1` to ignore the child's own `.env` (optional; by default `.env` is the fallback for values the hub leaves empty) |
 
 Node / TypeScript hub:
 ```typescript
@@ -35,7 +35,6 @@ const transport = new StdioClientTransport({
   env: {
     ...process.env,
     CENTRAL_CONFIG_PATH: '<HUB_SECRETS_JSON>',   // {"jira": {"base_url": …, "email": …, "api_token": …, "ai_context_key": …}}
-    PYTHON_DOTENV_DISABLED: '1',
   },
 });
 const jira = new Client({ name: 'hub', version: '1.0.0' });
@@ -67,7 +66,7 @@ async with stdio_client(params) as (r, w), ClientSession(r, w) as session:
 Notes:
 - The child's stderr carries its logs; its `logs/app.log` stays in the child's folder.
 - Run `python <JIRA_SYNC_PATH>/utils/env_check.py` once at hub install time; on a missing dependency the child exits 1 with the reason on stderr.
-- Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder (standalone; under mcp-hub fix the `jira` block in the Hub private config). The child never writes a key itself, so with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it.
+- Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder (standalone; under mcp-hub fix the `jira` block in the Hub private config). The child never writes a key itself: it comes from env, the central file, or the child's `.env` (the CLI writes one there), and with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it. `jira_check_connection` ends with `Config source: …` naming where each value came from (`env` / `hub` / `local` / `unset`).
 - Read-only hubs: `jira_sync_ticket` is the only tool with `readOnlyHint: false`. A user asking to "read PROJ-123" is asking for that write; the three read tools and `jira_check_connection` are read-only.
 - `jira_read_asset` returns an MCP **image** block; a hub that re-exposes results must pass non-text content through.
 

@@ -1,7 +1,7 @@
 import base64
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dotenv import dotenv_values, set_key
@@ -18,7 +18,7 @@ ENV_FILE = BASE_DIR / ".env"
 
 def _local_env() -> Dict[str, Optional[str]]:
     """Reads .env as a dict without touching os.environ, so injected variables and the central file keep priority."""
-    # mcp-hub sets PYTHON_DOTENV_DISABLED=1; dotenv_values ignores that flag (only load_dotenv honours it), so check it here
+    # Manual opt-out: dotenv_values ignores PYTHON_DOTENV_DISABLED (only load_dotenv honours it), so check it here
     if os.getenv("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:
         return {}
     return dotenv_values(ENV_FILE) if ENV_FILE.exists() else {}
@@ -58,6 +58,8 @@ class JiraConfig:
     api_token: str
     max_asset_size_mb: int = 15
     ai_context_key: str = ""  # Fernet key for .ai-context/ (core/vault.py); a secret like api_token
+    # Where each value came from: field name -> "env" | "hub" | "local" | "unset" (names only, never values)
+    sources: Dict[str, str] = field(default_factory=dict)
 
     @property
     def is_configured(self) -> bool:
@@ -71,8 +73,9 @@ class JiraConfig:
 def load_config() -> JiraConfig:
     """Loads Jira configuration with priority:
     1. Process Environment Variables (injected dynamically by Master MCP)
-    2. Central JSON Secrets file (via CENTRAL_CONFIG_PATH)
+    2. Central JSON Secrets file (via CENTRAL_CONFIG_PATH; a relative path resolves against BASE_DIR)
     3. Local .env file (standalone CLI fallback)
+    Empty values count as unset. config.sources records which one supplied each field.
     """
     local = _local_env()
 
@@ -80,8 +83,13 @@ def load_config() -> JiraConfig:
     central_path_str = os.getenv("CENTRAL_CONFIG_PATH") or local.get("CENTRAL_CONFIG_PATH") or ""
     central_jira: Dict[str, Any] = {}
     if central_path_str:
-        central_path = Path(central_path_str).expanduser().resolve()
-        if central_path.exists():
+        central_path = Path(central_path_str).expanduser()
+        if not central_path.is_absolute():
+            central_path = BASE_DIR / central_path  # relative to the repo root, not the CWD the hub launched us from
+        central_path = central_path.resolve()
+        if not central_path.exists():
+            logger.warning("CENTRAL_CONFIG_PATH is set but the file does not exist; using the local .env")
+        else:
             try:
                 parsed = json.loads(central_path.read_text(encoding="utf-8"))
                 if isinstance(parsed, dict):
@@ -90,8 +98,17 @@ def load_config() -> JiraConfig:
             except Exception as e:
                 logger.warning(f"Could not parse central config at {central_path}: {e}")
 
+    sources: Dict[str, str] = {}
+
     def pick(env_key: str, central_key: str) -> str:
-        return str(os.getenv(env_key) or central_jira.get(central_key) or local.get(env_key) or "").strip()
+        candidates = (("env", os.getenv(env_key)), ("hub", central_jira.get(central_key)), ("local", local.get(env_key)))
+        for source, value in candidates:
+            text = str(value or "").strip()
+            if text:
+                sources[central_key] = source
+                return text
+        sources[central_key] = "unset"
+        return ""
 
     base_url = pick("JIRA_BASE_URL", "base_url")
     email = pick("JIRA_EMAIL", "email")
@@ -101,14 +118,22 @@ def load_config() -> JiraConfig:
         max_size = int(pick("MAX_ASSET_SIZE_MB", "max_asset_size_mb") or 15)
     except ValueError:
         max_size = 15
+    ai_context_key = pick("JIRA_AI_CONTEXT_KEY", "ai_context_key")
 
     return JiraConfig(
         base_url=base_url,
         email=email,
         api_token=api_token,
         max_asset_size_mb=max_size,
-        ai_context_key=pick("JIRA_AI_CONTEXT_KEY", "ai_context_key"),
+        ai_context_key=ai_context_key,
+        sources=sources,
     )
+
+
+def format_sources(config: JiraConfig) -> str:
+    """'base_url=hub, email=hub, api_token=hub, ai_context_key=local': source names only, never values or paths."""
+    keys = ("base_url", "email", "api_token", "ai_context_key")
+    return ", ".join(f"{k}={config.sources.get(k, 'unset')}" for k in keys)
 
 
 def save_config(base_url: str, email: str, api_token: str, max_asset_size_mb: int = 15) -> None:

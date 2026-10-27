@@ -22,6 +22,7 @@ logger = setup_logging()
 cli_logger = get_logger("cli")
 
 from core.config import (
+    format_sources,
     load_config,
     save_config,
     REQUIRED_PERMISSIONS,
@@ -284,7 +285,7 @@ def main() -> None:
     authenticated = False
 
     if config.is_configured:
-        print("⏳ Verifying saved Jira credentials from .env...")
+        print(f"⏳ Verifying saved Jira credentials ({format_sources(config)})...")
         client = JiraClient(config)
         try:
             user = client.verify_account()

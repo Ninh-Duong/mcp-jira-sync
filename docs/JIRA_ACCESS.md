@@ -26,17 +26,20 @@ The CLI checks `BROWSE_PROJECTS` globally with `/mypermissions`. A `false` there
 
 ## 3. Configuration sources and priority
 
-`load_config()` resolves **each value independently**, first match wins:
+Standalone, the server reads only its local `.env`. Under mcp-hub, `CENTRAL_CONFIG_PATH` points to the hub's file and the `jira` block there is used, with `.env` as the fallback. `load_config()` resolves **each value independently**, first match wins; an empty value counts as unset:
 
-1. **Process environment**: what a hub or MCP client entry injects.
-2. **Central JSON file** at `CENTRAL_CONFIG_PATH` (from env, or from `.env`).
-3. **Local `.env`** in the repo root: written by the CLI login, read with `dotenv_values` (it never modifies `os.environ`). Skipped entirely when `PYTHON_DOTENV_DISABLED` is `1`/`true`/`yes` (mcp-hub sets it), so a standalone `.env` never leaks into hub runs.
+1. **Process environment** (`env`): what a hub or MCP client entry injects.
+2. **Central JSON file** (`hub`) at `CENTRAL_CONFIG_PATH` (from env, or from `.env`). A relative path resolves against the repo root (`BASE_DIR`), not the current directory; `~` is expanded; an absolute path stays as is.
+3. **Local `.env`** (`local`) in the repo root: written by the CLI login, read with `dotenv_values` (it never modifies `os.environ`). Skipped entirely when `PYTHON_DOTENV_DISABLED` is `1`/`true`/`yes` (manual opt-out; mcp-hub no longer sets it).
+4. Otherwise the default (`unset`).
 
 Central file shape (the `jira` object is optional; a flat object also works):
 ```json
 { "jira": { "base_url": "https://your-domain.atlassian.net", "email": "you@example.com", "api_token": "…", "ai_context_key": "…", "max_asset_size_mb": 15 } }
 ```
-An unreadable central file is logged as a warning and skipped.
+A missing or unreadable central file is logged as a warning and skipped (the `.env` fallback still applies). The server never writes the central file.
+
+`JiraConfig.sources` records where each of `base_url`, `email`, `api_token`, `ai_context_key`, `max_asset_size_mb` came from: `env` | `hub` | `local` | `unset`. `jira_check_connection` and the CLI start-up check print it, e.g. `Config source: base_url=hub, email=hub, api_token=hub, ai_context_key=local`: source names only, never values or the central file path.
 
 ## 4. Variables
 
@@ -47,9 +50,9 @@ An unreadable central file is logged as a warning and skipped.
 | `JIRA_API_TOKEN` | `api_token` | none (required) | classic or scoped API token |
 | `JIRA_AI_CONTEXT_KEY` | `ai_context_key` | none (required to sync or read); the CLI login writes one to `.env` | Fernet key (32 url-safe base64 bytes) that encrypts `.ai-context/`. A secret like the token |
 | `MAX_ASSET_SIZE_MB` | `max_asset_size_mb` | `15` | per-image download cap; invalid → 15 |
-| `CENTRAL_CONFIG_PATH` | n/a | unset | path to the central JSON (`~` expanded) |
+| `CENTRAL_CONFIG_PATH` | n/a | unset | path to the central JSON (`~` expanded; relative to the repo root) |
 | `AI_CONTEXT_DIR` | n/a | `<repo>/.ai-context` | output folder; env or `.env` only, read once at start |
-| `PYTHON_DOTENV_DISABLED` | n/a | unset | `1`/`true`/`yes`: ignore `.env` completely (set by mcp-hub) |
+| `PYTHON_DOTENV_DISABLED` | n/a | unset | `1`/`true`/`yes`: ignore `.env` completely (manual opt-out) |
 
 `.env.example` lists them all. `save_config` (CLI login) updates only the `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `MAX_ASSET_SIZE_MB` lines and keeps everything else in `.env`. It adds `JIRA_AI_CONTEXT_KEY` only when no source has one, and never replaces an existing key.
 

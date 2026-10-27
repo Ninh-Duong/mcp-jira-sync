@@ -20,7 +20,7 @@ if __name__ == "__main__":
     verify_environment(exit_on_error=True)
 
 from utils.logger import setup_logging, get_logger
-from core.config import load_config
+from core.config import format_sources, load_config
 from core.jira_client import JiraClient
 from core.sync_service import IMAGE_MIME_TYPES, SyncService, extract_issue_key, read_synced_file
 from core.indexer import list_indexed_tickets
@@ -139,7 +139,10 @@ def jira_check_connection() -> str:
     server_logger.info("MCP tool call: jira_check_connection()")
     config = load_config()
     if not config.is_configured:
-        return "Jira credentials are not configured yet. Please configure .env or run CLI to log in."
+        return (
+            "❌ Jira credentials are not configured yet. Set the `jira` block of the hub file (CENTRAL_CONFIG_PATH), "
+            "or .env via `python cli.py`."
+        )
 
     client = JiraClient(config)
     try:
@@ -147,7 +150,8 @@ def jira_check_connection() -> str:
         return (
             f"✅ Jira Cloud connection active!\n"
             f"- Base URL : {config.clean_base_url}\n"
-            f"- User     : {user.get('displayName')} ({user.get('emailAddress')})"
+            f"- User     : {user.get('displayName')} ({user.get('emailAddress')})\n"
+            f"Config source: {format_sources(config)}"
         )
     except Exception as e:
         server_logger.error(f"Connection check error: {e}", exc_info=True)
