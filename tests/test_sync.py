@@ -8,14 +8,16 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from cryptography.fernet import Fernet
 
 from core.adf_parser import adf_to_markdown
 import core.config as config_module
+import core.jira_client as jira_client_module
+import core.vault as vault
 from core.config import JiraConfig, load_config
-from core.indexer import list_indexed_tickets
+from core.indexer import get_indexed_ticket, list_indexed_tickets
 from core.jira_client import JiraClient, JiraApiError
 from core.sync_service import (
     FRONTMATTER_KEYS, SyncService, _format_ticket_markdown, extract_issue_key, read_synced_file,
@@ -133,10 +135,28 @@ class _TempAiContext(unittest.TestCase):
         self.verify = patch.object(JiraClient, "verify_account", return_value={"displayName": "Tester"}).start()
         patch("core.sync_service.TICKETS_DIR", self.test_dir / "tickets").start()
         patch("core.indexer.CATALOG_FILE", self.test_dir / "catalog.json.enc").start()
+        # Every gate call checks the login here (no 60 s cache), so a test can revoke it at any point; TestAccessCache covers the TTL
+        patch.object(vault, "ACCESS_TTL_SECONDS", 0).start()
+        patch.dict(vault._access_ok, clear=True).start()
         self.addCleanup(patch.stopall)
 
     def _all_bytes(self) -> bytes:
         return b"".join(p.read_bytes() for p in self.test_dir.rglob("*") if p.is_file())
+
+    def _call(self, tool, **args):
+        import server
+
+        try:
+            from mcp.server import MCPServer
+        except ImportError:
+            from mcp.server.fastmcp import FastMCP as MCPServer
+        app = MCPServer("parent")
+        server.register_jira_tools(app, prefix="x_")
+        result = asyncio.run(app.call_tool(f"x_{tool}", args))
+        content = getattr(result, "content", result)  # mcp 2.x CallToolResult; mcp 1.x content list or (content, structured)
+        if isinstance(content, tuple):
+            content = content[0]
+        return content
 
 
 class TestSyncServiceWithMock(_TempAiContext):
@@ -310,21 +330,6 @@ class TestReadTools(_TempAiContext):
             }
             self.assertTrue(SyncService(self.config).sync("DEMO-7").success)
 
-    def _call(self, tool, **args):
-        import server
-
-        try:
-            from mcp.server import MCPServer
-        except ImportError:
-            from mcp.server.fastmcp import FastMCP as MCPServer
-        app = MCPServer("parent")
-        server.register_jira_tools(app, prefix="x_")
-        result = asyncio.run(app.call_tool(f"x_{tool}", args))
-        content = getattr(result, "content", result)  # mcp 2.x CallToolResult; mcp 1.x content list or (content, structured)
-        if isinstance(content, tuple):
-            content = content[0]
-        return content
-
     def test_read_ticket_returns_decrypted_markdown(self):
         (block,) = self._call("jira_read_ticket", issue_key="demo-7")
         self.assertTrue(block.text.startswith("✅ DEMO-7"))
@@ -357,6 +362,188 @@ class TestReadTools(_TempAiContext):
         self.assertTrue(server.jira_read_asset("DEMO-7", "../../DEMO-8/assets/x.png").startswith("❌"))
         self.assertIn("Call jira_sync_ticket first", server.jira_read_ticket("DEMO-8"))
         self.assertTrue(server.jira_read_ticket("hello").startswith("❌ Invalid ticket key"))
+
+
+class TestAccessCache(unittest.TestCase):
+    """The gate trusts a successful Jira login for 60 s per account; a failure is checked again every time (F7 rule 3)."""
+
+    def setUp(self):
+        self.now = [1000.0]
+        self.config = self._config("dummy-token")
+        patch.object(JiraClient, "_resolve_cloud_id", return_value=None).start()
+        self.verify = patch.object(JiraClient, "verify_account", return_value={"displayName": "Tester"}).start()
+        patch.object(vault, "_clock", lambda: self.now[0]).start()
+        patch.dict(vault._access_ok, clear=True).start()
+        self.addCleanup(patch.stopall)
+
+    @staticmethod
+    def _config(token):
+        return JiraConfig(
+            base_url="https://test.atlassian.net", email="tester@example.com", api_token=token,
+            ai_context_key=Fernet.generate_key().decode("ascii"),
+        )
+
+    def test_success_is_reused_for_60_seconds(self):
+        self.assertEqual(vault.ACCESS_TTL_SECONDS, 60)
+        vault.unlock(self.config)
+        self.now[0] += 59
+        vault.unlock(self.config)
+        self.assertEqual(self.verify.call_count, 1)
+        self.now[0] += 2  # 61 s after the first check
+        vault.unlock(self.config)
+        self.assertEqual(self.verify.call_count, 2)
+        self.config.ai_context_key = ""  # the key is still required inside the TTL
+        with self.assertRaises(vault.NoAccessError):
+            vault.unlock(self.config)
+
+    def test_failures_are_not_cached(self):
+        self.verify.side_effect = JiraApiError(401, "Unauthorized")
+        for _ in range(2):
+            with self.assertRaises(vault.NoAccessError):
+                vault.unlock(self.config)
+        self.assertEqual(self.verify.call_count, 2)
+        self.verify.side_effect = None
+        vault.unlock(self.config)  # works again as soon as the login does
+        vault.unlock(self.config)
+        self.assertEqual(self.verify.call_count, 3)
+
+    def test_cache_is_per_account_and_stores_no_credentials(self):
+        vault.unlock(self.config)
+        vault.unlock(self._config("other-token"))
+        self.assertEqual(self.verify.call_count, 2)
+        stored = "".join(vault._access_ok)
+        for secret in ("dummy-token", "other-token", "tester@example.com"):
+            self.assertNotIn(secret, stored)
+
+
+class TestCloudIdCache(unittest.TestCase):
+    """tenant_info is requested once per site per process, not on every JiraClient construction."""
+
+    def setUp(self):
+        self.response = MagicMock(status_code=200)
+        self.response.json.return_value = {"cloudId": "cloud-1"}
+        self.http = MagicMock()
+        self.get = self.http.return_value.__enter__.return_value.get
+        self.get.return_value = self.response
+        patch.object(jira_client_module.httpx, "Client", self.http).start()
+        patch.dict(jira_client_module._CLOUD_IDS, clear=True).start()
+        self.addCleanup(patch.stopall)
+
+    @staticmethod
+    def _config(site):
+        return JiraConfig(base_url=f"https://{site}.atlassian.net", email="tester@example.com", api_token="dummy-token")
+
+    def test_cloud_id_resolved_once_per_site(self):
+        clients = [JiraClient(self._config("test")) for _ in range(3)]
+        self.assertEqual(self.get.call_count, 1)
+        self.assertEqual({c.cloud_id for c in clients}, {"cloud-1"})
+        self.assertEqual(clients[-1].api_url, "https://api.atlassian.com/ex/jira/cloud-1")
+        JiraClient(self._config("x"))  # another site resolves its own
+        self.assertEqual(self.get.call_count, 2)
+
+    def test_failed_resolution_is_retried(self):
+        self.response.status_code = 503
+        for _ in range(2):
+            self.assertIsNone(JiraClient(self._config("test")).cloud_id)
+        self.assertEqual(self.get.call_count, 2)
+
+
+def _issue(updated="2026-09-21T09:00:00Z", attachments=()):
+    return {
+        "key": "DEMO-5",
+        "fields": {"summary": "Export report as CSV", "updated": updated, "attachment": list(attachments)},
+        "changelog": {"histories": []},
+    }
+
+
+def _image(name, att_id, size):
+    return {"id": att_id, "filename": name, "mimeType": "image/png", "size": size,
+            "content": f"https://test.atlassian.net/att/{att_id}"}
+
+
+class TestSyncSkipWhenUnchanged(_TempAiContext):
+    """jira_sync_ticket on a cached ticket asks Jira only for `updated`; force=true always refetches (F9)."""
+
+    def setUp(self):
+        super().setUp()
+        self.get_issue = patch.object(JiraClient, "get_issue", return_value=_issue(attachments=[_image("a.png", "1", 4)])).start()
+        self.download = patch.object(JiraClient, "download_attachment", return_value=b"PIXELS").start()
+        self.updated = patch.object(JiraClient, "get_issue_updated", return_value="2026-09-21T09:00:00Z").start()
+        patch("core.sync_service.load_config", return_value=self.config).start()  # SyncService() inside the tool
+        first = SyncService(self.config).sync("DEMO-5")
+        self.assertTrue(first.success)
+        self.assertFalse(first.unchanged)
+        self.updated.assert_not_called()  # nothing cached yet: no light check
+
+    def test_unchanged_ticket_is_not_fetched_again(self):
+        (block,) = self._call("jira_sync_ticket", issue_key="demo-5")
+        self.assertTrue(block.text.startswith("✅ Ticket DEMO-5 is up to date"), block.text)
+        self.assertIn("- Images: 1", block.text)
+        self.assertIn("jira_read_ticket('DEMO-5')", block.text)
+        self.updated.assert_called_once_with("DEMO-5")
+        self.assertEqual(self.get_issue.call_count, 1)
+        self.assertEqual(self.download.call_count, 1)
+        result = SyncService(self.config).sync("DEMO-5")
+        self.assertTrue(result.success and result.unchanged)
+        self.assertEqual(result.assets_downloaded, 1)
+        self.assertTrue(result.ticket_file.is_file())
+
+    def test_changed_ticket_is_synced_in_full(self):
+        self.updated.return_value = "2026-09-22T10:00:00Z"
+        self.get_issue.return_value = _issue("2026-09-22T10:00:00Z", [_image("a.png", "1", 4)])
+        result = SyncService(self.config).sync("DEMO-5")
+        self.assertTrue(result.success)
+        self.assertFalse(result.unchanged)
+        self.assertEqual(self.get_issue.call_count, 2)
+        self.assertEqual(get_indexed_ticket("DEMO-5", self.fernet)["jira_updated_at"], "2026-09-22T10:00:00Z")
+
+    def test_force_skips_the_up_to_date_check(self):
+        (block,) = self._call("jira_sync_ticket", issue_key="DEMO-5", force=True)
+        self.assertTrue(block.text.startswith("✅ Ticket DEMO-5 synchronized"), block.text)
+        self.assertIn("- Images: 1 (1 unchanged, not downloaded again)", block.text)
+        self.updated.assert_not_called()
+        self.assertEqual(self.get_issue.call_count, 2)
+
+    def test_missing_cached_file_means_full_sync(self):
+        (self.test_dir / "tickets" / "DEMO-5" / "history.md.enc").unlink()
+        result = SyncService(self.config).sync("DEMO-5")
+        self.assertFalse(result.unchanged)
+        self.updated.assert_not_called()
+        self.assertEqual(self.get_issue.call_count, 2)
+
+
+class TestAttachmentReuse(_TempAiContext):
+    """A full sync downloads an image only when its Jira id or size changed, or the cached copy is gone (F9)."""
+
+    def test_only_changed_images_are_downloaded(self):
+        data = {f"https://test.atlassian.net/att/{i}": v for i, v in (("1", b"A-v1"), ("2", b"B-v1"), ("3", b"B-v2"))}
+        with patch.object(JiraClient, "get_issue") as get_issue, \
+                patch.object(JiraClient, "download_attachment", side_effect=lambda url, name: data[url]) as download:
+            def sync(*images):
+                download.reset_mock()
+                get_issue.return_value = _issue(attachments=images)
+                result = SyncService(self.config).sync("DEMO-5", force=True)
+                self.assertTrue(result.success, result.message)
+                return result, [c.args[0].rsplit("/", 1)[-1] for c in download.call_args_list]
+
+            first, fetched = sync(_image("a.png", "1", 4), _image("b.png", "2", 4))
+            self.assertEqual((fetched, first.assets_downloaded, first.assets_reused), (["1", "2"], 2, 0))
+
+            second, fetched = sync(_image("a.png", "1", 4), _image("b.png", "3", 4))  # b.png replaced in Jira
+            self.assertEqual((fetched, second.assets_downloaded, second.assets_reused), (["3"], 2, 1))
+            self.assertEqual(read_synced_file("DEMO-5", "assets/a.png", self.fernet), b"A-v1")
+            self.assertEqual(read_synced_file("DEMO-5", "assets/b.png", self.fernet), b"B-v2")
+            self.assertEqual(get_indexed_ticket("DEMO-5", self.fernet)["assets"],
+                             {"a.png": {"id": "1", "size": 4}, "b.png": {"id": "3", "size": 4}})
+
+            data["https://test.atlassian.net/att/1"] = b"A-v2"
+            _, fetched = sync(_image("a.png", "1", 5), _image("b.png", "3", 4))  # same id, new size
+            self.assertEqual(fetched, ["1"])
+            self.assertEqual(read_synced_file("DEMO-5", "assets/a.png", self.fernet), b"A-v2")
+
+            (self.test_dir / "tickets" / "DEMO-5" / "assets" / "b.png.enc").unlink()
+            _, fetched = sync(_image("a.png", "1", 5), _image("b.png", "3", 4))  # cached copy gone
+            self.assertEqual(fetched, ["3"])
 
 
 class TestContracts(unittest.TestCase):
@@ -543,9 +730,20 @@ class TestContracts(unittest.TestCase):
         for name in ("x_jira_read_ticket", "x_jira_read_asset", "x_jira_list_synced", "x_jira_check_connection"):
             self.assertTrue(hints[name]["readOnlyHint"], name)
             self.assertTrue(hints[name]["openWorldHint"], name)  # every read logs in to Jira first
+        # jira_sync_ticket: issue_key required, force an optional boolean (default false); the other tools keep their inputs
+        schemas = {name: t.model_dump(by_alias=True)["inputSchema"] for name, t in tools.items()}  # wire name in 1.x and 2.x
+        sync_schema = schemas["x_jira_sync_ticket"]
+        self.assertEqual(sync_schema.get("required"), ["issue_key"])
+        self.assertEqual(set(sync_schema["properties"]), {"issue_key", "force"})
+        self.assertEqual(sync_schema["properties"]["force"]["type"], "boolean")
+        self.assertIs(sync_schema["properties"]["force"]["default"], False)
+        self.assertEqual(set(schemas["x_jira_read_ticket"]["properties"]), {"issue_key"})
         instructions = server.jira_instructions("x_")
-        for name in ("x_jira_sync_ticket", "x_jira_read_ticket", "x_jira_read_asset", "No access"):
+        for name in ("x_jira_sync_ticket", "x_jira_read_ticket", "x_jira_read_asset", "x_jira_check_connection",
+                     "force=true", "up to date", "No access"):
             self.assertIn(name, instructions)
+        # read the cache first; sync only when needed
+        self.assertLess(instructions.index("x_jira_read_ticket"), instructions.index("x_jira_sync_ticket"))
 
 
 class TestPublicRepoHygiene(unittest.TestCase):

@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import Fernet
 
@@ -48,3 +48,8 @@ def list_indexed_tickets(fernet: Fernet) -> List[Dict[str, Any]]:
     tickets = list(_read_catalog(fernet).get("tickets", {}).values())
     tickets.sort(key=lambda x: x.get("jira_updated_at", ""), reverse=True)
     return tickets
+
+
+def get_indexed_ticket(key: str, fernet: Fernet) -> Optional[Dict[str, Any]]:
+    """Returns the catalog entry of one synced ticket, or None when it was never synced."""
+    return _read_catalog(fernet).get("tickets", {}).get(key.upper())

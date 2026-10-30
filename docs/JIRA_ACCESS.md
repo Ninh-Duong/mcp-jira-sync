@@ -58,7 +58,7 @@ A missing or unreadable central file is logged as a warning and skipped (the `.e
 
 ### The encryption key
 
-- **Reading needs two things**: the key, and a Jira login that works at that moment (the tools call `/myself` first). A copy of `.ai-context/` alone, or the key alone with a revoked token, reads nothing. See [FEATURES.md F7](FEATURES.md#f7-encrypted-ai-context-and-the-access-gate).
+- **Reading needs two things**: the key, and a Jira login that works (the tools call `/myself` first; a success is reused for 60 s per account, a failure never). A copy of `.ai-context/` alone, or the key alone with a revoked token, reads nothing. See [FEATURES.md F7](FEATURES.md#f7-encrypted-ai-context-and-the-access-gate).
 - **Sharing**: teammates who should read the same `.ai-context/` need the same key. Send it the way you would send a token (password manager), never in a repo, ticket, or chat with an agent. Each of them still logs in with their own Jira token.
 - **Hub**: the server never writes the key. Put `ai_context_key` in the hub's central JSON next to `api_token`, or inject `JIRA_AI_CONTEXT_KEY`.
 - **Lost or changed key**: old files cannot be decrypted. Delete `.ai-context/` and sync the tickets again.

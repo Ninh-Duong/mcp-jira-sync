@@ -29,11 +29,9 @@ From the 2026-10-20 review. Not fixed yet, in rough priority order. Before fixin
 | B6 | Medium | `adf_parser` `media` + `sync_service` | Inline image link uses the raw `alt` (not sanitized like the saved file); non-image media links to a uuid; `.svg` is linked to `assets/` but never downloaded | share `_sanitize_filename`; map media id → attachment; decide on `image/svg+xml` |
 | B7 | Medium | `download_attachment` | Uses the attachment `content` URL on the tenant domain; scoped tokens (gateway-only) may get 401 | when `api_url` is the gateway, use `{api_url}/rest/api/3/attachment/content/{id}` |
 | B8 | Low | `sync_service` attachments | Two attachments with the same filename overwrite each other | suffix with attachment id on collision |
-| B9 | Low | `JiraClient.__init__` | Network call (`tenant_info`) on every construction, i.e. every tool call | resolve lazily, or cache per base URL |
 | B10 | Low | `server.py` packaging | Top-level module names `server`, `core`, `utils` collide with other Python children mounted in one hub process | move into a package (`mcp_jira_sync/`) when in-process mounting is actually used |
 | B11 | Low | `jira_list_synced` | No filters; returns every ticket | add `status`/`label` filters only when an agent needs them (FEATURES.md first) |
 | B12 | Low | catalog | Tickets deleted in Jira stay in the catalog forever | a "prune" action if it ever matters |
 | B13 | Low (security) | `JiraClient.download_attachment` | Basic auth goes to whatever host the attachment `content` URL names (in practice always the tenant; httpx drops auth on cross-origin redirects) | send `Authorization` only when the host is the tenant or `api.atlassian.com` |
 | B14 | Low (security) | `_sanitize_filename` | `.` and `..` pass through; the write then fails safely (caught), but the image is lost | map them to `_` |
-| B15 | Low | `core/vault.unlock` | Every read/list/sync makes one `/myself` call (plus B9's `tenant_info`), so reading a ticket and its 5 images costs 6 logins | cache a successful check for ~60 s per (url, email, token) if it gets slow; a revoked token then stays usable that long |
 | B16 | Low | `jira_read_ticket` | A long `history.md` is returned whole | add `offset`/`limit` only when a real ticket overflows an agent's context |

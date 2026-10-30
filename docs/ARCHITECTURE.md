@@ -53,18 +53,26 @@ sequenceDiagram
     participant FS as AI_CONTEXT_DIR
     C->>S: sync("…/browse/PROJ-1")
     S->>S: extract_issue_key → PROJ-1 (else SyncResult(success=False))
-    S->>J: unlock: key set? verify_account() (else "No access: …", nothing written)
+    S->>J: unlock: key set? verify_account() (else "No access: …", nothing written; a success is reused for 60 s)
+    opt cached, not force
+        S->>J: get_issue_updated(PROJ-1) (fields=updated)
+        J-->>S: same as catalog jira_updated_at → SyncResult(unchanged=True), nothing written
+    end
     S->>J: get_issue(PROJ-1) (expand=changelog,names)
     J-->>S: issue JSON (or JiraApiError 401/403/404)
     loop each image attachment
-        S->>J: download_attachment(content_url, name) → bytes in memory (size-capped)
-        S->>FS: write_encrypted assets/<name>.enc
+        alt same id and size as the catalog's assets entry, and the .enc exists
+            S->>S: keep the cached assets/<name>.enc
+        else
+            S->>J: download_attachment(content_url, name) → bytes in memory (size-capped)
+            S->>FS: write_encrypted assets/<name>.enc
+        end
     end
     S->>FS: purge assets not attached any more (and plaintext leftovers)
     S->>S: adf_to_markdown(description)
     S->>FS: write_encrypted tickets/PROJ-1/ticket.md.enc, history.md.enc
     S->>FS: register_ticket → catalog.json.enc
-    S-->>C: SyncResult(success, ticket_file, history_file, assets_downloaded, message)
+    S-->>C: SyncResult(success, ticket_file, history_file, assets_downloaded, message, unchanged, assets_reused)
 ```
 
 Steps 0-8 in the code match this order. `sync()` catches every exception and returns a `SyncResult`; callers never need `try`.
@@ -72,7 +80,7 @@ Steps 0-8 in the code match this order. `sync()` catches every exception and ret
 ## 2b. Read path (`jira_read_ticket`, `jira_read_asset`, `jira_list_synced`, CLI `[5]`)
 
 ```
-tool → load_config() → unlock(config)          # key valid AND verify_account() succeeds now, else "❌ No access: …"
+tool → load_config() → unlock(config)          # key valid AND verify_account() succeeded (now, or < 60 s ago for this account), else "❌ No access: …"
      → read_synced_file(key, "ticket.md" | "history.md" | "assets/<file>", fernet)
          → path must stay inside tickets/<KEY>/ → read_encrypted (HMAC check) → plaintext in memory only
      → text, or an MCP image block
@@ -84,9 +92,9 @@ Nothing decrypted is cached or written; each call decrypts again. Format and key
 
 `JiraClient` ([core/jira_client.py](../core/jira_client.py)) supports both classic API tokens (work on the tenant URL) and scoped API tokens (work only through the Atlassian gateway):
 
-1. **Constructor**: for `*.atlassian.net`, `GET <base>/_edge/tenant_info` (8 s timeout, unauthenticated) → `cloudId`. If found, `api_url = https://api.atlassian.com/ex/jira/<cloudId>`; otherwise `api_url = base_url`.
+1. **Constructor**: for `*.atlassian.net`, `GET <base>/_edge/tenant_info` (8 s timeout, unauthenticated) → `cloudId`, cached per process and site (`_CLOUD_IDS`; a failed lookup is retried next time). If found, `api_url = https://api.atlassian.com/ex/jira/<cloudId>`; otherwise `api_url = base_url`.
 2. **`verify_account`**: try `GET <base>/rest/api/3/myself` directly. On failure, and if a cloudId exists, try `GET <gateway>/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS`; on success, use the gateway, and `/myself` if allowed, else a synthesized `"<name> (Scoped Token)"` user. Otherwise raise `JiraApiError(401)`.
-3. **`get_issue`**: try `api_url`, then gateway, then direct (deduplicated). 401/403/404 move on to the next candidate; the last status decides the error.
+3. **`get_issue`** (`expand=changelog,names`) and **`get_issue_updated`** (`fields=updated`, the light up-to-date check): try `api_url`, then gateway, then direct (deduplicated). 401/403/404 move on to the next candidate; the last status decides the error.
 4. **`download_attachment`**: stream the attachment `content` URL with redirects into memory, abort past `MAX_ASSET_SIZE_MB`, return the bytes (the caller encrypts them; nothing touches the disk here).
 
 Timeouts: tenant_info 8 s · myself/permissions 15 s · issue 25 s · attachment 30 s. No retries.

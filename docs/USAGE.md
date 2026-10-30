@@ -33,18 +33,20 @@ For standalone use from the clone, run `uv run --locked python server.py` over s
 
 | Tool | Does |
 |---|---|
-| `jira_sync_ticket(issue_key)` | fetches the ticket into the encrypted cache (the only tool that writes) |
+| `jira_sync_ticket(issue_key, force=false)` | fetches the ticket into the encrypted cache (the only tool that writes). Already cached and unchanged in Jira: one small request, replies `up to date`. Unchanged images are never downloaded again. `force=true` skips the up-to-date check |
 | `jira_read_ticket(issue_key)` | returns the decrypted `ticket.md` + `history.md` |
 | `jira_read_asset(issue_key, filename)` | returns one screenshot as an image |
 | `jira_list_synced()` | lists synced tickets |
-| `jira_check_connection()` | checks credentials, shows the user and where each value came from (`Config source: …`) |
+| `jira_check_connection()` | checks credentials, shows the user and where each value came from (`Config source: …`). For agents: only after another call failed |
 
-Every tool except `jira_check_connection` passes the access gate first: key set **and** a Jira login that works now, else `❌ No access: …`. Full contract (arguments, annotations): [AGENTS.md §4](../AGENTS.md#4-mcp-tools-reference).
+Every tool except `jira_check_connection` passes the access gate first: key set **and** a Jira login that works (checked at most once a minute per account), else `❌ No access: …`. Full contract (arguments, annotations): [AGENTS.md §4](../AGENTS.md#4-mcp-tools-reference).
 
 Typical agent flow (what `jira_instructions()` tells it, and what `/mcp-hub mcp-jira-sync PROJ-123 read this ticket` triggers through a hub):
 ```
-jira_sync_ticket("PROJ-123")   → ✅ Ticket PROJ-123 synchronized (encrypted in .ai-context/). - Images: 2
+jira_read_ticket("PROJ-123")   → ❌ PROJ-123 has no synced 'ticket.md'. Call jira_sync_ticket first.   (or the cached ticket)
+jira_sync_ticket("PROJ-123")   → ✅ Ticket PROJ-123 synchronized (encrypted in .ai-context/). - Images: 2 (0 unchanged, not downloaded again)
 jira_read_ticket("PROJ-123")   → ✅ PROJ-123: ticket.md then history.md ... (full Markdown)
+jira_sync_ticket("PROJ-123")   → ✅ Ticket PROJ-123 is up to date (unchanged in Jira since the last sync; nothing downloaded).
 jira_read_asset("PROJ-123", "login-error.png")  → image
 → the agent lists goal, use cases, acceptance criteria, edge cases, open questions, and waits for you
 ```

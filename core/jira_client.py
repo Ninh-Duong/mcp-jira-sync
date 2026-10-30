@@ -7,6 +7,9 @@ from utils.logger import get_logger
 
 logger = get_logger("jira_client")
 
+# cloudId per site, resolved once per process (tenant_info is the same for every account on a site)
+_CLOUD_IDS: Dict[str, str] = {}
+
 
 class JiraApiError(Exception):
     """Custom exception for Jira API errors with status and response details."""
@@ -43,7 +46,9 @@ class JiraClient:
         }
 
     def _resolve_cloud_id(self) -> Optional[str]:
-        """Auto-resolves Atlassian cloudId from tenant_info for Cloud instances."""
+        """Auto-resolves Atlassian cloudId from tenant_info for Cloud instances, once per site (failures retry next time)."""
+        if self.base_url in _CLOUD_IDS:
+            return _CLOUD_IDS[self.base_url]
         if ".atlassian.net" in self.base_url:
             try:
                 with httpx.Client(timeout=8.0) as client:
@@ -51,6 +56,8 @@ class JiraClient:
                     if res.status_code == 200:
                         cid = res.json().get("cloudId")
                         logger.debug(f"Resolved Jira cloudId: {cid}")
+                        if cid:
+                            _CLOUD_IDS[self.base_url] = cid
                         return cid
             except Exception as e:
                 logger.debug(f"Could not resolve tenant_info cloudId: {e}")
@@ -145,8 +152,15 @@ class JiraClient:
 
     def get_issue(self, issue_key: str) -> Dict[str, Any]:
         """Fetches complete issue details including changelog and attachments with endpoint fallback."""
+        return self._fetch_issue(issue_key, {"expand": "changelog,names"})
+
+    def get_issue_updated(self, issue_key: str) -> str:
+        """Light check: only the issue's `updated` timestamp (`fields=updated`), same endpoint fallback and errors."""
+        return self._fetch_issue(issue_key, {"fields": "updated"}).get("fields", {}).get("updated", "")
+
+    def _fetch_issue(self, issue_key: str, params: Dict[str, str]) -> Dict[str, Any]:
+        """GET /rest/api/3/issue/{key} with `params`: api_url, then gateway, then direct. Raises JiraApiError."""
         key = issue_key.strip().upper()
-        params = {"expand": "changelog,names"}
 
         # Candidate URLs to try (primary api_url first, then fallback if needed)
         urls_to_try = [f"{self.api_url}/rest/api/3/issue/{key}"]

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from core.adf_parser import adf_to_markdown
 from core.config import JiraConfig, TICKETS_DIR, load_config
-from core.indexer import register_ticket
+from core.indexer import get_indexed_ticket, register_ticket
 from core.jira_client import JiraClient, JiraApiError
 from core.vault import ENC_SUFFIX, NoAccessError, read_encrypted, unlock, write_encrypted
 from utils.logger import get_logger
@@ -37,8 +37,10 @@ class SyncResult:
     key: str
     ticket_file: Optional[Path] = None
     history_file: Optional[Path] = None
-    assets_downloaded: int = 0
+    assets_downloaded: int = 0  # images in the cache after this sync (downloaded now or reused)
     message: str = ""
+    unchanged: bool = False  # Jira `updated` matched the cache: nothing was fetched or written (F9)
+    assets_reused: int = 0  # images kept from the cache because id and size matched (F9)
 
 
 # Jira project keys start with a letter and may contain letters, digits and underscores
@@ -208,8 +210,45 @@ class SyncService:
         self.config = config or load_config()
         self.client = JiraClient(self.config)
 
-    def sync(self, issue_key: str) -> SyncResult:
-        """Executes full synchronization for a specific Jira issue."""
+    def _unchanged_result(
+        self, key: str, cached: Dict[str, Any], ticket_file: Path, history_file: Path
+    ) -> Optional[SyncResult]:
+        """The cached result when the ticket is cached and Jira's `updated` (light `fields=updated` request) still matches."""
+        cached_updated = cached.get("jira_updated_at")
+        if not (cached_updated and ticket_file.is_file() and history_file.is_file()):
+            return None
+        if self.client.get_issue_updated(key) != cached_updated:
+            return None
+        msg = f"Ticket {key} is up to date (unchanged in Jira since the last sync); nothing was downloaded."
+        logger.info(msg)
+        return SyncResult(
+            success=True,
+            key=key,
+            ticket_file=ticket_file,
+            history_file=history_file,
+            assets_downloaded=cached.get("assets_count", 0),
+            message=msg,
+            unchanged=True,
+        )
+
+    def _store_image(
+        self, content_url: str, asset_file: Path, identity: Dict[str, Any], previous: Optional[Dict[str, Any]], fernet
+    ) -> Optional[str]:
+        """Keeps the cached copy when the attachment id and size match it ('reused'), else downloads ('downloaded').
+
+        None when the download failed or was over the size limit.
+        """
+        if identity["id"] and previous == identity and asset_file.is_file():
+            logger.info(f"Asset unchanged, kept from the cache: {asset_file.name}")
+            return "reused"
+        data = self.client.download_attachment(content_url, asset_file.name[: -len(ENC_SUFFIX)])
+        if data is None:
+            return None
+        write_encrypted(asset_file, data, fernet)
+        return "downloaded"
+
+    def sync(self, issue_key: str, force: bool = False) -> SyncResult:
+        """Syncs one Jira issue. Unless `force`, a cached ticket whose Jira `updated` is unchanged is left as is (F9)."""
         key = extract_issue_key(issue_key)
         if not key:
             msg = f"Invalid ticket key: '{issue_key}'. Expected PROJECT-123 or a Jira /browse/PROJECT-123 URL."
@@ -226,6 +265,17 @@ class SyncService:
         try:
             # 0. Access gate: nothing is written unless the key is set and the Jira login works
             fernet = unlock(self.config)
+
+            ticket_dir = TICKETS_DIR / key
+            ticket_file = ticket_dir / f"ticket.md{ENC_SUFFIX}"
+            history_file = ticket_dir / f"history.md{ENC_SUFFIX}"
+            cached = get_indexed_ticket(key, fernet) or {}
+
+            # 0b. Up-to-date check: one light request for `updated` instead of the full fetch and every download
+            if not force:
+                unchanged = self._unchanged_result(key, cached, ticket_file, history_file)
+                if unchanged:
+                    return unchanged
 
             # 1. Fetch issue payload
             issue_data = self.client.get_issue(key)
@@ -245,7 +295,6 @@ class SyncService:
             jira_url = f"{self.config.clean_base_url}/browse/{key}"
 
             # 3. Destination folders (100% relative resolution)
-            ticket_dir = TICKETS_DIR / key
             assets_dir = ticket_dir / "assets"
             ticket_dir.mkdir(parents=True, exist_ok=True)
 
@@ -253,6 +302,10 @@ class SyncService:
             attachments = fields.get("attachment", [])
             downloaded_images: List[Dict[str, str]] = []
             other_files: List[Dict[str, Any]] = []
+            # filename -> Jira attachment identity of the cached copy; an identical one is not downloaded again
+            previous_assets: Dict[str, Any] = cached.get("assets", {})
+            asset_identities: Dict[str, Dict[str, Any]] = {}
+            reused = 0
 
             for att in attachments:
                 filename = _sanitize_filename(att.get("filename", "asset"))
@@ -260,10 +313,15 @@ class SyncService:
                 content_url = att.get("content", "")
 
                 if mime_type in IMAGE_MIME_TYPES:
-                    data = self.client.download_attachment(content_url, filename)
-                    if data is not None:
-                        write_encrypted(assets_dir / f"{filename}{ENC_SUFFIX}", data, fernet)
-                        downloaded_images.append({"filename": filename, "mime": mime_type})
+                    identity = {"id": att.get("id"), "size": att.get("size")}
+                    stored = self._store_image(
+                        content_url, assets_dir / f"{filename}{ENC_SUFFIX}", identity, previous_assets.get(filename), fernet
+                    )
+                    if stored is None:
+                        continue
+                    reused += stored == "reused"
+                    downloaded_images.append({"filename": filename, "mime": mime_type})
+                    asset_identities[filename] = identity
                 else:
                     other_files.append(att)
 
@@ -314,7 +372,6 @@ class SyncService:
                 relations=relations,
             )
 
-            ticket_file = ticket_dir / f"ticket.md{ENC_SUFFIX}"
             write_encrypted(ticket_file, ticket_md_content.encode("utf-8"), fernet)
             logger.info(f"Wrote ticket markdown: {ticket_file}")
 
@@ -323,7 +380,6 @@ class SyncService:
             histories = changelog_data.get("histories", [])
             history_md_content = _format_history_markdown(key, summary, histories)
 
-            history_file = ticket_dir / f"history.md{ENC_SUFFIX}"
             write_encrypted(history_file, history_md_content.encode("utf-8"), fernet)
             logger.info(f"Wrote history changelog: {history_file} ({len(histories)} entries)")
 
@@ -346,12 +402,14 @@ class SyncService:
                 "ticket_path": f"tickets/{key}/ticket.md{ENC_SUFFIX}",
                 "history_path": f"tickets/{key}/history.md{ENC_SUFFIX}",
                 "labels": labels,
+                "assets": asset_identities,
             }
             register_ticket(index_meta, fernet)
 
             success_msg = (
                 f"Successfully synced ticket {key} to {ticket_file.relative_to(ticket_dir.parent.parent)} "
-                f"with {len(downloaded_images)} image(s) and {len(histories)} changelog entries."
+                f"with {len(downloaded_images)} image(s) ({reused} unchanged, not downloaded again) "
+                f"and {len(histories)} changelog entries."
             )
             logger.info(success_msg)
             return SyncResult(
@@ -361,6 +419,7 @@ class SyncService:
                 history_file=history_file,
                 assets_downloaded=len(downloaded_images),
                 message=success_msg,
+                assets_reused=reused,
             )
 
         except (JiraApiError, NoAccessError) as e:

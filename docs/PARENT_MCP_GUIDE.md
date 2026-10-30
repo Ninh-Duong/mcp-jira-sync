@@ -67,7 +67,7 @@ Notes:
 - The child's stderr carries its logs; its `logs/app.log` stays in the child's folder.
 - Run `python <JIRA_SYNC_PATH>/utils/env_check.py` once at hub install time; on a missing dependency the child exits 1 with the reason on stderr.
 - Credentials and the key can't be entered through MCP. If `jira_check_connection` reports "not configured", or a read returns `No access: JIRA_AI_CONTEXT_KEY is not set`, the hub must provide env / the central file, or the user runs `python cli.py` in the child folder (standalone; under mcp-hub fix the `jira` block in the Hub private config). The child never writes a key itself: it comes from env, the central file, or the child's `.env` (the CLI writes one there), and with `PYTHON_DOTENV_DISABLED=1` the hub **must** supply it. `jira_check_connection` ends with `Config source: …` naming where each value came from (`env` / `hub` / `local` / `unset`).
-- Read-only hubs: `jira_sync_ticket` is the only tool with `readOnlyHint: false`. A user asking to "read PROJ-123" is asking for that write; the three read tools and `jira_check_connection` are read-only.
+- Read-only hubs: `jira_sync_ticket` is the only tool with `readOnlyHint: false`. A user asking to "read PROJ-123" is asking for it when the ticket is not cached yet or may be stale; read the cache with `jira_read_ticket` first. A sync of an unchanged ticket writes nothing (one `fields=updated` request); `force: true` always refetches. The three read tools and `jira_check_connection` are read-only. Call `jira_check_connection` only after another call failed.
 - `jira_read_asset` returns an MCP **image** block; a hub that re-exposes results must pass non-text content through.
 
 ---

@@ -114,14 +114,15 @@ Images embedded in the description (`media` nodes whose `alt` ends in an image e
       "assignee": "...", "jira_updated_at": "<fields.updated>", "synced_at": "<UTC ISO>",
       "assets_count": 0, "history_count": 3,
       "ticket_path": "tickets/<KEY>/ticket.md.enc", "history_path": "tickets/<KEY>/history.md.enc",
-      "labels": []
+      "labels": [],
+      "assets": { "<image file name>": { "id": "<Jira attachment id>", "size": 1234 } }
     }
   }
 }
 ```
 
 - Paths inside the catalog are **relative to `AI_CONTEXT_DIR`**, so the folder can be moved.
-- Every successful sync calls `register_ticket()`, which upserts the entry. `jira_list_synced` shows it sorted by `jira_updated_at` desc. There is no `INDEX.md` any more.
+- Every successful full sync calls `register_ticket()`, which upserts the entry. A sync that finds the ticket unchanged (`jira_updated_at` equals Jira's `updated`, [FEATURES.md F9](FEATURES.md#f9-incremental-sync-skip-what-did-not-change)) writes nothing. `assets` maps each cached image to its Jira attachment `id` and `size`; an entry written before it existed simply means every image is downloaded once more. `jira_list_synced` shows it sorted by `jira_updated_at` desc. There is no `INDEX.md` any more.
 - A catalog that decrypts but is not valid JSON is logged and rebuilt empty; one that does not decrypt is `No access`. Entries are never removed by a sync.
 
 ## 6. Asset rules
@@ -130,12 +131,14 @@ Images embedded in the description (`media` nodes whose `alt` ends in an image e
 - Size cap: `MAX_ASSET_SIZE_MB` (default 15), checked against `Content-Length` and while streaming. Oversized or failed downloads are skipped, logged, and left out of `assets_count`.
 - Filenames: `\ / * ? : " < > |` are replaced with `_`.
 - Downloads stay in memory and are written only as `<filename>.enc`.
+- **Reuse on re-sync**: an image whose attachment `id` and `size` match the catalog's `assets` entry and whose `.enc` file exists is kept, not downloaded again.
 - **Purge on re-sync**: a file in `assets/` whose name is not `<image attachment>.enc` any more is deleted, and an empty `assets/` folder is removed. `ticket.md.enc` and `history.md.enc` are overwritten on every sync, and the plaintext files of older versions (`ticket.md`, `history.md`, `catalog.json`, `INDEX.md`) are deleted. Never hand-edit anything under `.ai-context/`.
 
 ## 7. Format changelog
 
 | Date | Change |
 |---|---|
+| 2026-10-30 | Catalog entries gain `assets` (image file name → Jira attachment `id`, `size`), used to skip unchanged downloads. Additive: older entries without it still work. |
 | 2026-10-20 | Frontmatter values are JSON-quoted (valid YAML). Before, `key`/`status`/... were unquoted and `labels` was a Python repr (`['a', 'b']`). |
 | 2026-10-20 | `AI_CONTEXT_DIR` can move the folder (tools briefly returned absolute paths; since the encryption change below they return no paths). |
 | 2026-10-20 | **Breaking**: every file is encrypted (`<name>.enc`, Fernet, key `JIRA_AI_CONTEXT_KEY`). `INDEX.md` is gone. Agents read through `jira_read_ticket` / `jira_read_asset`; tools no longer return file paths. Old plaintext folders are not read: re-sync each ticket (its plaintext files are deleted) or delete `.ai-context/`. |
