@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-jira-sync"
+version = "0.1.0"
+description = "Local MCP Server and CLI to sync Jira tickets for AI Agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "cryptography>=42.0.0",
+]
+
+[project.scripts]
+mcp-jira-sync-cli = "cli:main"
+mcp-jira-sync = "server:main"
+
+[tool.setuptools]
+packages = ["core", "utils"]
+py-modules = ["server", "cli"]

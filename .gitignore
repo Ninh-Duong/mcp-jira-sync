@@ -1,0 +1,47 @@
+# Environment and secrets (public repo: see docs/SECURITY.md)
+.env
+*.env
+.env.local
+*secrets*.json
+central*.json
+*.bak
+
+# Local denylist of employer/project terms read by TestPublicRepoHygiene (must never be pushed)
+.private-terms
+
+# Project-scope AI client configs (hold absolute local paths and sometimes tokens)
+.mcp.json
+.cursor/
+.agents/
+.claude/
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.venv/
+env/
+venv/
+ENV/
+
+# Logs (Kept locally for AI Agent debugging, never pushed)
+logs/
+*.log
+
+# AI Context (Local Jira synced context, contains internal ticket data)
+.ai-context/
+
+# Testing and cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

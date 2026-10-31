@@ -1,0 +1,25 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.1"
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run --locked python utils/env_check.py
+      - run: uv run --locked python -m unittest discover tests
+      - run: uv run --locked python -m compileall -q cli.py server.py core utils tests
