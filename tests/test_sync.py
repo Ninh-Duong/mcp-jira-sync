@@ -806,5 +806,21 @@ class TestPublicRepoHygiene(unittest.TestCase):
         self.assertEqual(problems, [], "Use placeholders from docs/SECURITY.md:\n" + "\n".join(problems))
 
 
+class TestHubRequirements(unittest.TestCase):
+    """hub-requirements.json: mcp-hub warns when these keys are empty in the Hub file; core/config.py reads them there."""
+
+    def test_declares_the_jira_keys_that_config_reads_from_the_central_file(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        data = json.loads((root / "hub-requirements.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 1)
+        keys = [key for group in data["groups"] for alternative in group["anyOf"] for key in alternative]
+        self.assertTrue(keys)
+        source = (root / "core" / "config.py").read_text(encoding="utf-8")
+        for key in keys:
+            section, leaf = key.split(".")
+            self.assertEqual(section, "jira")
+            self.assertIn(f'"{leaf}")', source, f"core/config.py does not read {key} from the central file")
+
+
 if __name__ == "__main__":
     unittest.main()

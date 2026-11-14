@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "label": "Jira",
+      "anyOf": [
+        ["jira.base_url", "jira.email", "jira.api_token"]
+      ]
+    }
+  ]
+}
