@@ -198,6 +198,9 @@ def handle_sync_ticket() -> None:
         print(f"🎉 TICKET SYNCED SUCCESSFULLY: {result.key}")
         print(f"🔒 Encrypted Files: {result.ticket_file.parent}")
         print(f"🖼️  Assets Download: {result.assets_downloaded} image(s)")
+        print(f"Attachments: {result.attachments_count} total, {result.attachments_cached} cached, {result.attachments_unavailable} unavailable")
+        if result.attachments_unavailable:
+            print("Warning: attachment sync is incomplete; inspect the ticket's attachment statuses.")
         print("=" * 65)
         print("💡 Tip: read it here with [5], or let an AI Agent call jira_read_ticket.")
     else:

@@ -33,9 +33,9 @@ For standalone use from the clone, run `uv run --locked python server.py` over s
 
 | Tool | Does |
 |---|---|
-| `jira_sync_ticket(issue_key, force=false)` | fetches the ticket into the encrypted cache (the only tool that writes). Already cached and unchanged in Jira: one small request, replies `up to date`. Unchanged images are never downloaded again. `force=true` skips the up-to-date check |
+| `jira_sync_ticket(issue_key, force=false)` | fetches the ticket into the encrypted cache (the only tool that writes). Already cached and unchanged in Jira: one small request, replies `up to date`. All attachment types are cached by default within MAX_ASSET_SIZE_MB; unavailable files are reported. Unchanged attachments are not downloaded again; legacy/missing cache entries are repaired. `force=true` skips the up-to-date check |
 | `jira_read_ticket(issue_key)` | returns the decrypted `ticket.md` + `history.md` |
-| `jira_read_asset(issue_key, filename)` | returns one screenshot as an image |
+| `jira_read_asset(issue_key, filename)` | returns an image block or an embedded resource for another cached file, with MIME and original filename |
 | `jira_list_synced()` | lists synced tickets |
 | `jira_check_connection()` | checks credentials, shows the user and where each value came from (`Config source: …`). For agents: only after another call failed |
 
@@ -59,7 +59,7 @@ jira_read_asset("PROJ-123", "login-error.png")  → image
 └── tickets/PROJ-123/
     ├── ticket.md.enc               # YAML frontmatter + description + images + relations
     ├── history.md.enc              # changelog, newest first
-    └── assets/<file>.enc           # downloaded images
+    └── assets/<file>.enc           # cached attachments of all types
 ```
 
 Every file is encrypted: opening one shows only a Fernet token. The format is a contract: [AI_CONTEXT_FORMAT.md](AI_CONTEXT_FORMAT.md). Upgrading from a plaintext version: re-sync your tickets (their plaintext files are deleted) or delete `.ai-context/`. File names stay readable, so keep the folder git-ignored if ticket keys are private ([SECURITY.md](SECURITY.md)).

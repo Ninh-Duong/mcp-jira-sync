@@ -25,11 +25,11 @@ Writers: `SyncService.sync` ([core/sync_service.py](../core/sync_service.py)) an
     └── <KEY>/                    # KEY = upper-case issue key, e.g. PROJ-123
         ├── ticket.md.enc         # frontmatter + description + assets + relations (§3)
         ├── history.md.enc        # changelog, newest first (§4)
-        └── assets/               # downloaded images only; absent when there are none
+        └── assets/               # all cached attachments; absent when there are none
             └── <filename>.enc
 ```
 
-- **File format**: each `.enc` file is one [Fernet token](https://github.com/fernet/spec/blob/master/Spec.md) (`cryptography.fernet`: AES-128-CBC with a random IV, plus HMAC-SHA256 over version, timestamp, IV, and ciphertext), stored as its url-safe base64 text. The plaintext is the UTF-8 Markdown/JSON below, or the raw image bytes.
+- **File format**: each `.enc` file is one [Fernet token](https://github.com/fernet/spec/blob/master/Spec.md) (`cryptography.fernet`: AES-128-CBC with a random IV, plus HMAC-SHA256 over version, timestamp, IV, and ciphertext), stored as its url-safe base64 text. The plaintext is the UTF-8 Markdown/JSON below, or the raw attachment bytes.
 - **Key**: `JIRA_AI_CONTEXT_KEY`, a 32-byte url-safe base64 Fernet key ([JIRA_ACCESS.md](JIRA_ACCESS.md#the-encryption-key)). One key per `.ai-context/`.
 - **Reading**: only after the access gate (key set **and** a working Jira login), see [FEATURES.md F7](FEATURES.md#f7-encrypted-ai-context-and-the-access-gate). A wrong key or an edited file fails the HMAC and gives `No access: cannot decrypt ...`.
 - Only [core/vault.py](../core/vault.py) encrypts or decrypts. Never write a plaintext file here.
@@ -79,8 +79,8 @@ assets_count: 1
 
 1. `# [<KEY>] <summary>`, then a blockquote with Source link, Type / Status / Priority, Assignee / Reporter, Last Updated, and a link to `history.md`.
 2. `## 1. Description & Requirements`: the description converted from ADF ([core/adf_parser.py](../core/adf_parser.py)); `*No description provided.*` when empty.
-3. `## 2. Visual Assets & Screenshots`: one `### 📷 <filename>` + `![<filename>](assets/<filename>)` per downloaded image, or `*No image attachments found.*`.
-4. `## 3. Other Attachments & Documents`: **only when present**. Non-image attachments as links to their Jira URL (need a Jira login) with size in KB. They are not downloaded.
+3. An attachment totals line precedes `## 2. Visual Assets & Screenshots`. Each image has a heading and original filename, MIME, size and status; cached images have an assets/<filename> image link. Missing/failed images remain visible without a read link.
+4. `## 3. Other Attachments & Documents`: **only when present**. Each file includes original filename, MIME, size and status. Cached files link to assets/<filename>; unavailable files have no local read link. Read with jira_read_asset; non-images return embedded resources rather than extracted document text.
 5. `## 4. Related Issues & Dependencies`: parent, subtasks (with status), issue links (inward/outward wording from Jira), or `*No related dependencies recorded.*`.
 
 Images embedded in the description (`media` nodes whose `alt` ends in an image extension) also link to `assets/<alt>`.
@@ -115,29 +115,34 @@ Images embedded in the description (`media` nodes whose `alt` ends in an image e
       "assets_count": 0, "history_count": 3,
       "ticket_path": "tickets/<KEY>/ticket.md.enc", "history_path": "tickets/<KEY>/history.md.enc",
       "labels": [],
-      "assets": { "<image file name>": { "id": "<Jira attachment id>", "size": 1234 } }
+      "assets": { "<cached filename>": { "id": "<Jira attachment id>", "size": 1234 } },
+      "attachment_schema": 1, "attachments_count": 1, "attachments_complete": true,
+      "attachments": [{"id": "<Jira attachment id>", "filename": "AC1-criteria.pdf", "original_filename": "AC1-criteria.pdf", "mime": "application/pdf", "size": 1234, "status": "cached"}]
     }
   }
 }
 ```
 
 - Paths inside the catalog are **relative to `AI_CONTEXT_DIR`**, so the folder can be moved.
-- Every successful full sync calls `register_ticket()`, which upserts the entry. A sync that finds the ticket unchanged (`jira_updated_at` equals Jira's `updated`, [FEATURES.md F9](FEATURES.md#f9-incremental-sync-skip-what-did-not-change)) writes nothing. `assets` maps each cached image to its Jira attachment `id` and `size`; an entry written before it existed simply means every image is downloaded once more. `jira_list_synced` shows it sorted by `jira_updated_at` desc. There is no `INDEX.md` any more.
+- Every successful full sync calls `register_ticket()`, which upserts the entry. A sync that finds the ticket unchanged (`jira_updated_at` equals Jira's `updated`, [FEATURES.md F9](FEATURES.md#f9-incremental-sync-skip-what-did-not-change)) writes nothing. `assets` maps each cached attachment to its Jira attachment `id` and `size`; an entry written before it existed simply means every image is downloaded once more. `jira_list_synced` shows it sorted by `jira_updated_at` desc. There is no `INDEX.md` any more.
 - A catalog that decrypts but is not valid JSON is logged and rebuilt empty; one that does not decrypt is `No access`. Entries are never removed by a sync.
 
 ## 6. Asset rules
 
-- Downloaded MIME types: `image/png`, `image/jpeg`, `image/jpg`, `image/webp`, `image/gif` (`IMAGE_MIME_TYPES`).
+The current attachment manifest is authoritative: catalog entries add attachment_schema=1, attachments_count, attachments_complete and attachments records (id, filename, original_filename, mime, size, status; reused may also be present). Status is cached, size_limit or download_failed. assets now contains identities for all cached files; assets_count remains the cached image count for compatibility. Old entries or missing/incomplete assets require ordinary-sync backfill before the unchanged shortcut can apply.
+
+- Every MIME type is downloaded by default. IMAGE_MIME_TYPES controls image rendering only; other files are served as binary resources.
 - Size cap: `MAX_ASSET_SIZE_MB` (default 15), checked against `Content-Length` and while streaming. Oversized or failed downloads are skipped, logged, and left out of `assets_count`.
-- Filenames: `\ / * ? : " < > |` are replaced with `_`.
+- Cached filenames replace filesystem/Markdown delimiters, whitespace and control characters with underscores, avoid reserved names, and disambiguate case-insensitive collisions. Original names are preserved separately for context.
 - Downloads stay in memory and are written only as `<filename>.enc`.
-- **Reuse on re-sync**: an image whose attachment `id` and `size` match the catalog's `assets` entry and whose `.enc` file exists is kept, not downloaded again.
-- **Purge on re-sync**: a file in `assets/` whose name is not `<image attachment>.enc` any more is deleted, and an empty `assets/` folder is removed. `ticket.md.enc` and `history.md.enc` are overwritten on every sync, and the plaintext files of older versions (`ticket.md`, `history.md`, `catalog.json`, `INDEX.md`) are deleted. Never hand-edit anything under `.ai-context/`.
+- **Reuse on re-sync**: any attachment whose id/size matches the catalog assets entry and whose encrypted file exists is reused. Removed/unavailable copies and legacy plaintext assets are purged.
+- **Purge on re-sync**: a file in `assets/` whose name is not a current cached attachment filename any more is deleted, and an empty `assets/` folder is removed. `ticket.md.enc` and `history.md.enc` are overwritten on every sync, and the plaintext files of older versions (`ticket.md`, `history.md`, `catalog.json`, `INDEX.md`) are deleted. Never hand-edit anything under `.ai-context/`.
 
 ## 7. Format changelog
 
 | Date | Change |
 |---|---|
+| 2026-11-23 | All-type attachment manifest (attachment_schema=1), original filenames and completeness. Non-image links now reference encrypted local files; unavailable files are explicit. Legacy caches are backfilled on ordinary sync; frontmatter keys and image count semantics remain unchanged. |
 | 2026-10-30 | Catalog entries gain `assets` (image file name → Jira attachment `id`, `size`), used to skip unchanged downloads. Additive: older entries without it still work. |
 | 2026-10-20 | Frontmatter values are JSON-quoted (valid YAML). Before, `key`/`status`/... were unquoted and `labels` was a Python repr (`['a', 'b']`). |
 | 2026-10-20 | `AI_CONTEXT_DIR` can move the folder (tools briefly returned absolute paths; since the encryption change below they return no paths). |

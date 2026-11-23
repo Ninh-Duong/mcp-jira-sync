@@ -4,6 +4,8 @@ Local MCP server and CLI that lets an AI agent read a Jira Cloud ticket before i
 
 ## Quick start
 
+Sync includes all attachments by default, including images, PDF/Office files, text and archives, within the configured per-file size limit. Original filenames and file status remain visible in the ticket. Read images or retrieve other file bytes with jira_read_asset; binary retrieval is distinct from document text extraction. See [attachment sync](docs/ATTACHMENTS.md).
+
 Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/). Run these commands from this clone.
 
 ```bash

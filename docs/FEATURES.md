@@ -29,13 +29,13 @@ Behavior rules:
 2. Unconfigured credentials return `success=False` with a message to log in. Nothing is written.
 3. The access gate (F7) runs first; when it refuses, the message starts with `No access:` and nothing is fetched or written.
 4. One `GET /rest/api/3/issue/{key}?expand=changelog,names` (with endpoint fallback, see [ARCHITECTURE.md](ARCHITECTURE.md#3-jira-access-strategy)), unless the ticket is already cached and unchanged (F9).
-5. Image attachments download **into memory** and are written encrypted to `assets/<file>.enc` (one already cached with the same attachment id and size is kept, F9); non-image attachments are listed only.
+5. All attachments download **into memory** and are written encrypted to assets/<file>.enc, within the configured size limit. Same-id/size files are reused; original names, MIME, size and unavailable status are listed (F10).
 6. Description ADF → Markdown; `ticket.md.enc` and `history.md.enc` are fully rewritten (same Jira state gives the same plaintext; the ciphertext differs each time).
 7. The encrypted catalog is updated. Plaintext files left by older versions (`ticket.md`, `history.md`, unencrypted assets, `catalog.json`, `INDEX.md`) are deleted.
 8. Errors never raise out of `sync()`: `JiraApiError` / `NoAccessError` → its message (404 not found / 403 forbidden / 401 auth / `No access:`); anything else → `Unexpected error: ...`, with the stack trace in `logs/app.log`.
-9. The MCP reply holds the key and the image count (and how many were unchanged), not file paths (the files are unreadable without F8).
+9. The MCP reply holds image and attachment counts, reused counts and an explicit warning when any attachment is unavailable, not file paths.
 
-Non-goals: no download of non-image files (PDF, docx, zip), no comments, no worklogs, no custom-field mapping (only the fields in the frontmatter table).
+Non-goals: no document text extraction, comments, worklogs or custom-field mapping (only the fields in the frontmatter table).
 
 ## F2. Asset purge on re-sync
 
@@ -130,26 +130,30 @@ Purpose: the agent gets the ticket's text and screenshots in its context, so it 
 Rules:
 1. Both tools pass the gate (F7) first.
 2. `jira_read_ticket` returns `✅ <KEY>: ...` then the decrypted `ticket.md`, a `---` line, and `history.md`.
-3. `jira_read_asset` returns one MCP image block (base64, MIME from the extension). It accepts the file name as written in `ticket.md`, with or without `assets/`. Only `IMAGE_MIME_TYPES` extensions are served.
+3. jira_read_asset returns an image block for IMAGE_MIME_TYPES, or a binary embedded resource for other cached files. MIME comes from the encrypted manifest; legacy images use their extension. It accepts the cached filename listed in ticket.md, with or without assets/. A file not marked cached is refused. Document text extraction is a client concern (F10).
 4. A name that resolves outside `tickets/<KEY>/` is refused. A ticket that was never synced returns `❌ ... Call jira_sync_ticket first.`
 5. Reading never calls Jira for ticket data (only the gate's `/myself`, at most once a minute); call `jira_sync_ticket` to refresh.
 
-Non-goals: no paging or search inside a ticket, no automatic sync on read (the hub treats sync as a write), no non-image attachments.
+Non-goals: no paging/search inside a ticket, automatic sync on read, document conversion or archive extraction.
+
+## F10. Complete attachment sync
+
+Purpose, behavior, non-goals and tests: [Complete attachment sync](ATTACHMENTS.md). This extends F1/F8/F9: all attachment types are synced by default, with explicit completeness and safe read access.
 
 ## F9. Incremental sync (skip what did not change)
 
 | | |
 |---|---|
 | Entry points | part of F1: MCP `jira_sync_ticket(issue_key, force=false)` · CLI menu `[1]` (never forced) |
-| Core | `SyncService._unchanged_result`, `SyncService._store_image`, `JiraClient.get_issue_updated`, `get_indexed_ticket` ([core/indexer.py](../core/indexer.py)) |
+| Core | SyncService._unchanged_result, sync_attachments ([core/attachments.py](../core/attachments.py)), JiraClient.get_issue_updated, get_indexed_ticket ([core/indexer.py](../core/indexer.py)) |
 | Tests | `TestSyncSkipWhenUnchanged`, `TestAttachmentReuse`, `TestCloudIdCache`, `TestContracts.test_tools_mount_with_prefix` |
 
 Purpose: an agent that syncs a ticket it already has costs Jira one small request, not a full fetch and every image again.
 
 Rules:
-1. When the ticket has a catalog entry with `jira_updated_at`, both `ticket.md.enc` and `history.md.enc` exist, and `force` is false: one `GET /rest/api/3/issue/{key}?fields=updated` (same endpoint fallback and errors as F1). If it equals `jira_updated_at`, the sync returns success with `unchanged=True` and writes nothing (not even `synced_at`). The MCP reply starts `✅ Ticket <KEY> is up to date` and keeps the `- Images: <n>` and `Next:` lines.
-2. Otherwise (not cached, a file missing, a different `updated`, or `force=true`) the full sync of F1 runs.
-3. In a full sync an image attachment is not downloaded again when the catalog's `assets` entry for that file name has the same Jira attachment `id` and `size` and `assets/<file>.enc` exists. A new id, a new size, a missing file, or no `id` from Jira means a download. `force` does not change this rule.
+1. When the ticket has a catalog entry with `jira_updated_at`, both `ticket.md.enc` and `history.md.enc` exist, the attachment manifest is current and complete with every cached file present, and `force` is false: one `GET /rest/api/3/issue/{key}?fields=updated` (same endpoint fallback and errors as F1). If it equals `jira_updated_at`, the sync returns success with `unchanged=True` and writes nothing (not even `synced_at`). The MCP reply starts `✅ Ticket <KEY> is up to date` and keeps the `- Images: <n>` and `Next:` lines.
+2. Otherwise (not cached, legacy attachment schema, any cached file missing, incomplete attachments, a different updated, or force=true) the full sync of F1 runs. The fast path also requires a complete current attachment manifest; see F10.
+3. In a full sync any attachment is reused when its catalog assets identity (id/size) and encrypted file match. A new id/size, missing file or missing Jira id means a download. force does not change this rule.
 4. `JiraClient` resolves the `cloudId` (`/_edge/tenant_info`) once per process and site; a failed lookup is tried again on the next construction.
 
 Non-goals: no content hashing of images (Jira gives a new attachment id for a new upload), no background or scheduled refresh, no `synced_at` update on an unchanged check.

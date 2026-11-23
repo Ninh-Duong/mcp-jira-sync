@@ -358,7 +358,7 @@ class TestReadTools(_TempAiContext):
     def test_read_rejects_paths_outside_the_ticket(self):
         import server
 
-        self.assertTrue(server.jira_read_asset("DEMO-7", "../ticket.md").startswith("❌ Not an image"))
+        self.assertTrue(server.jira_read_asset("DEMO-7", "../ticket.md").startswith("❌ Invalid attachment"))
         self.assertTrue(server.jira_read_asset("DEMO-7", "../../DEMO-8/assets/x.png").startswith("❌"))
         self.assertIn("Call jira_sync_ticket first", server.jira_read_ticket("DEMO-8"))
         self.assertTrue(server.jira_read_ticket("hello").startswith("❌ Invalid ticket key"))
@@ -546,8 +546,187 @@ class TestAttachmentReuse(_TempAiContext):
             self.assertEqual(fetched, ["3"])
 
 
+class TestFullAttachments(_TempAiContext):
+    """Default sync includes every attachment type without plaintext persistence."""
+
+    def setUp(self):
+        super().setUp()
+        self.attachments = []
+        self.payloads = {}
+        for number, (name, mime) in enumerate([
+            ("screen.png", "image/png"), ("AC1-criteria.pdf", "application/pdf"),
+            ("AC2 expected.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ("requirements.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("example.txt", "text/plain"), ("examples.zip", "application/zip"),
+        ], 1):
+            att = _image(name, str(number), 8)
+            att["mimeType"] = mime
+            self.attachments.append(att)
+            self.payloads[att["content"]] = ("secret-content-" + str(number)).encode("utf-8")
+        self.issue = patch.object(JiraClient, "get_issue", return_value=_issue(attachments=self.attachments)).start()
+        self.updated = patch.object(JiraClient, "get_issue_updated", return_value="2026-09-21T09:00:00Z").start()
+        self.download = patch.object(JiraClient, "download_attachment", side_effect=lambda url, name: self.payloads[url]).start()
+        patch("server.load_config", return_value=self.config).start()
+
+    def sync(self):
+        result = SyncService(self.config).sync("DEMO-5")
+        self.assertTrue(result.success, result.message)
+        return result, get_indexed_ticket("DEMO-5", self.fernet)
+
+    def test_default_sync_caches_every_type_encrypted_with_original_names(self):
+        result, cached = self.sync()
+        self.assertEqual(result.attachments_count, 6)
+        self.assertEqual(result.assets_downloaded, 1)
+        self.assertTrue(cached["attachments_complete"])
+        self.assertEqual(len(cached["attachments"]), 6)
+        ticket = read_synced_file("DEMO-5", "ticket.md", self.fernet).decode("utf-8")
+        for att, record in zip(self.attachments, cached["attachments"]):
+            self.assertEqual(record["original_filename"], att["filename"])
+            self.assertIn(att["filename"], ticket)
+            data = read_synced_file("DEMO-5", "assets/" + record["filename"], self.fernet)
+            self.assertEqual(data, self.payloads[att["content"]])
+            self.assertNotIn(data, self._all_bytes())
+        self.assertIn("application/pdf", ticket)
+        self.assertIn("Attachments: 6", ticket)
+
+    def test_unchanged_all_type_cache_avoids_every_download(self):
+        self.sync()
+        self.download.reset_mock()
+        result, _ = self.sync()
+        self.assertTrue(result.unchanged)
+        self.download.assert_not_called()
+        self.assertEqual(self.issue.call_count, 1)
+
+    def test_old_catalog_is_backfilled_even_when_jira_is_unchanged(self):
+        from core.indexer import register_ticket
+        _, cached = self.sync()
+        cached.pop("attachment_schema")
+        for record in cached["attachments"][1:]:
+            (self.test_dir / "tickets/DEMO-5/assets" / (record["filename"] + ".enc")).unlink()
+            cached["assets"].pop(record["filename"])
+        for field in ("attachments", "attachments_count", "attachments_complete"):
+            cached.pop(field)
+        register_ticket(cached, self.fernet)
+        self.download.reset_mock()
+        result, cached = self.sync()
+        self.assertFalse(result.unchanged)
+        self.assertEqual(self.issue.call_count, 2)
+        self.assertTrue(cached["attachments_complete"])
+        self.assertEqual(self.download.call_count, 5)
+
+    def test_missing_document_repairs_without_redownloading_other_files(self):
+        _, cached = self.sync()
+        name = cached["attachments"][1]["filename"]
+        (self.test_dir / "tickets/DEMO-5/assets" / (name + ".enc")).unlink()
+        self.download.reset_mock()
+        result, _ = self.sync()
+        self.assertFalse(result.unchanged)
+        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(result.attachments_reused, 5)
+
+    def test_failed_and_oversize_files_are_visible_and_retried(self):
+        self.attachments[1]["size"] = 6 * 1024 * 1024
+        self.issue.return_value = _issue(attachments=self.attachments)
+        broken_url = self.attachments[2]["content"]
+        self.download.side_effect = lambda url, name: None if url == broken_url else self.payloads[url]
+        result, cached = self.sync()
+        self.assertFalse(cached["attachments_complete"])
+        self.assertEqual(result.attachments_unavailable, 2)
+        self.assertEqual(cached["attachments"][1]["status"], "size_limit")
+        self.assertEqual(cached["attachments"][2]["status"], "download_failed")
+        ticket = read_synced_file("DEMO-5", "ticket.md", self.fernet).decode("utf-8")
+        self.assertIn("size_limit", ticket)
+        self.assertIn("download_failed", ticket)
+        self.assertFalse(self.sync()[0].unchanged)
+        self.assertEqual(self.issue.call_count, 2)
+
+    def test_duplicate_and_sanitized_names_never_overwrite_each_other(self):
+        for att, name in zip(self.attachments, ["AC1.pdf", "ac1.PDF", "AC1.pdf", "a/b.txt", "a\\b.txt", "CON"]):
+            att["filename"] = name
+        self.issue.return_value = _issue(attachments=self.attachments)
+        _, cached = self.sync()
+        names = [r["filename"] for r in cached["attachments"]]
+        self.assertEqual(len({name.casefold() for name in names}), 6)
+        for att, record in zip(self.attachments, cached["attachments"]):
+            data = read_synced_file("DEMO-5", "assets/" + record["filename"], self.fernet)
+            self.assertEqual(data, self.payloads[att["content"]])
+
+    def test_removed_document_is_purged(self):
+        _, cached = self.sync()
+        old = self.test_dir / "tickets/DEMO-5/assets" / (cached["attachments"][1]["filename"] + ".enc")
+        self.issue.return_value = _issue("2026-09-22T09:00:00Z", self.attachments[:1])
+        self.updated.return_value = "2026-09-22T09:00:00Z"
+        _, cached = self.sync()
+        self.assertFalse(old.exists())
+        self.assertEqual(len(cached["attachments"]), 1)
+
+    def test_mounted_binary_read_returns_exact_document_and_mime(self):
+        self.sync()
+        (block,) = self._call("jira_read_asset", issue_key="DEMO-5", filename="assets/AC1-criteria.pdf")
+        resource = block.model_dump(by_alias=True)["resource"]
+        self.assertEqual(resource["mimeType"], "application/pdf")
+        self.assertEqual(base64.b64decode(resource["blob"]), self.payloads[self.attachments[1]["content"]])
+        self.assertIn("AC1-criteria.pdf", str(resource["uri"]))
+
+    def test_unlisted_or_failed_document_is_not_readable(self):
+        self.download.side_effect = lambda url, name: None
+        self.sync()
+        import server
+        for name in ("AC1-criteria.pdf", "../ticket.md", "../../DEMO-8/assets/file.pdf", "missing.pdf"):
+            self.assertTrue(server.jira_read_asset("DEMO-5", name).startswith("❌"))
+
+    def test_partial_sync_tool_warns_instead_of_claiming_completeness(self):
+        patch("core.sync_service.load_config", return_value=self.config).start()
+        self.download.side_effect = lambda url, name: None
+        (block,) = self._call("jira_sync_ticket", issue_key="DEMO-5")
+        self.assertIn("6 total, 0 cached, 6 unavailable", block.text)
+        self.assertIn("Warning: attachment sync is incomplete", block.text)
+
+    def test_legacy_image_remains_readable(self):
+        from core.indexer import register_ticket
+        _, cached = self.sync()
+        cached.pop("attachments")
+        register_ticket(cached, self.fernet)
+        (block,) = self._call("jira_read_asset", issue_key="DEMO-5", filename="screen.png")
+        self.assertEqual(block.type, "image")
+
+    def test_inline_image_uses_cached_name_and_preserves_original_context(self):
+        self.attachments[0]["filename"] = "AC1 expected screen.png"
+        self.issue.return_value = _issue(attachments=self.attachments)
+        self.issue.return_value["fields"]["description"] = "![Expected](assets/AC1 expected screen.png)"
+        _, cached = self.sync()
+        ticket = read_synced_file("DEMO-5", "ticket.md", self.fernet).decode("utf-8")
+        self.assertIn("![Expected](assets/" + cached["attachments"][0]["filename"] + ")", ticket)
+        self.assertIn("AC1 expected screen.png", ticket)
+
+    def test_failed_replacement_cannot_return_old_document_bytes(self):
+        _, cached = self.sync()
+        name = cached["attachments"][1]["filename"]
+        self.attachments[1]["id"] = "replacement"
+        self.issue.return_value = _issue("2026-09-22T09:00:00Z", self.attachments)
+        self.updated.return_value = "2026-09-22T09:00:00Z"
+        broken_url = self.attachments[1]["content"]
+        self.download.side_effect = lambda url, name: None if url == broken_url else self.payloads[url]
+        self.sync()
+        import server
+        self.assertTrue(server.jira_read_asset("DEMO-5", name).startswith("❌"))
+        self.assertFalse((self.test_dir / "tickets/DEMO-5/assets" / (name + ".enc")).exists())
+
+
 class TestContracts(unittest.TestCase):
     """Locks the contracts documented in docs/AI_CONTEXT_FORMAT.md, docs/JIRA_ACCESS.md and AGENTS.md."""
+
+    def test_complete_attachment_contract_is_documented_and_advertised(self):
+        import server
+        from core.attachments import ATTACHMENT_SCHEMA
+
+        self.assertEqual(ATTACHMENT_SCHEMA, 1)
+        instructions = server.jira_instructions()
+        for phrase in ("all attachment types", "unavailable", "original filenames", "acceptance", "embedded"):
+            self.assertIn(phrase, instructions)
+        root = Path(__file__).resolve().parent.parent
+        self.assertIn("attachment_schema", (root / "docs/AI_CONTEXT_FORMAT.md").read_text(encoding="utf-8"))
+        self.assertTrue((root / "docs/ATTACHMENTS.md").is_file())
 
     def test_frontmatter_is_valid_and_complete(self):
         meta = {

@@ -49,6 +49,7 @@ If a task needs real data in a tracked file, stop and tell the user why it can't
 | `core/jira_client.py` | Jira REST v3 over `httpx`: cloudId resolution, direct vs gateway endpoint fallback, `verify_account`, `check_permissions`, `get_issue`, `download_attachment` (size-capped, into memory) |
 | `core/sync_service.py` | `SyncService.sync(key) -> SyncResult`: the pipeline (gate → fetch → assets → ADF → ticket.md → history.md → catalog, all encrypted). `read_synced_file`, `extract_issue_key`, `FRONTMATTER_KEYS` |
 | `core/adf_parser.py` | Pure function `adf_to_markdown(adf)`: recursive Atlassian Document Format → Markdown |
+| `core/attachments.py` | All-type encrypted attachment sync, safe unique cached names, original-name metadata, completeness and reuse; see docs/ATTACHMENTS.md |
 | `core/indexer.py` | Encrypted `catalog.json.enc`: `register_ticket(meta, fernet)`, `list_indexed_tickets(fernet)` |
 | `utils/logger.py` | Rotating file log `logs/app.log` (frozen format) + stderr console |
 | `utils/env_check.py` | Pre-flight: Python version and dependency imports |
@@ -99,13 +100,13 @@ Changing the `.ai-context/` layout, the encryption format, or `ticket.md` frontm
 
 ## 4. MCP tools reference
 
-Registered by `register_jira_tools(app, prefix="")`; names below are with an empty prefix. Every tool returns **text** that starts with `✅` on success or `❌` on failure (failures are not raised; see [docs/BACKLOG.md](docs/BACKLOG.md) about `isError`), except a successful `jira_read_asset`, which returns one image block. A refusal by the access gate starts with `❌ No access:` (or `No access:` inside a sync error). The gate reuses a successful Jira login check for 60 s per account (F7).
+Registered by `register_jira_tools(app, prefix="")`; names below are with an empty prefix. Every tool returns **text** that starts with `✅` on success or `❌` on failure (failures are not raised; see [docs/BACKLOG.md](docs/BACKLOG.md) about `isError`), except a successful `jira_read_asset`, which returns an image block or embedded attachment resource. A refusal by the access gate starts with `❌ No access:` (or `No access:` inside a sync error). The gate reuses a successful Jira login check for 60 s per account (F7).
 
 | Tool | Args | Returns | Annotations |
 |---|---|---|---|
-| `jira_sync_ticket` | `issue_key: str` (bare key `PROJ-123` / `MY_PROJ-1`, or a URL containing `/browse/KEY` or `selectedIssue=KEY`), `force: bool = false` (skip the up-to-date check) | Key, image count (`- Images: N (M unchanged, not downloaded again)`), and "call `jira_read_ticket`". Writes the encrypted cache. A cached ticket whose Jira `updated` is unchanged costs one `fields=updated` request and replies `✅ Ticket KEY is up to date …` with nothing written ([FEATURES.md F9](docs/FEATURES.md#f9-incremental-sync-skip-what-did-not-change)) | readOnly **false**, destructive false, idempotent true, openWorld true |
+| `jira_sync_ticket` | `issue_key: str` (bare key `PROJ-123` / `MY_PROJ-1`, or a URL containing `/browse/KEY` or `selectedIssue=KEY`), `force: bool = false` (skip the up-to-date check) | Key, image count and total/cached/unavailable attachment counts, with a warning for incomplete sync (`- Images: N (M unchanged, not downloaded again)`), and "call `jira_read_ticket`". Writes the encrypted cache. A ticket with a complete current attachment cache whose Jira `updated` is unchanged costs one `fields=updated` request and replies `✅ Ticket KEY is up to date …` with nothing written ([FEATURES.md F9](docs/FEATURES.md#f9-incremental-sync-skip-what-did-not-change)) | readOnly **false**, destructive false, idempotent true, openWorld true |
 | `jira_read_ticket` | `issue_key: str` | Decrypted `ticket.md`, a `---` line, then `history.md` | readOnly true, openWorld true (gate) |
-| `jira_read_asset` | `issue_key: str`, `filename: str` (as in `ticket.md`, `assets/` prefix optional) | One image block (base64, `image/png` / `jpeg` / `webp` / `gif`) | readOnly true, openWorld true (gate) |
+| `jira_read_asset` | `issue_key: str`, `filename: str` (as in `ticket.md`, `assets/` prefix optional) | An image block for cached images, or a binary embedded resource with original filename and MIME for other cached attachments | readOnly true, openWorld true (gate) |
 | `jira_list_synced` | none | One line per synced ticket: key, summary, status, assignee, `synced_at` | readOnly true, openWorld true (gate) |
 | `jira_check_connection` | none | Base URL, user display name / email, and `Config source: base_url=…, email=…, api_token=…, ai_context_key=…` (`env`/`hub`/`local`/`unset`), or a configuration hint | readOnly true, openWorld true |
 

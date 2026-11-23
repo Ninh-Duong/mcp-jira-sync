@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.adf_parser import adf_to_markdown
+from core.attachments import ATTACHMENT_SCHEMA, IMAGE_MIME_TYPES, cache_complete, link_attachments, sync_attachments
 from core.config import JiraConfig, TICKETS_DIR, load_config
 from core.indexer import get_indexed_ticket, register_ticket
 from core.jira_client import JiraClient, JiraApiError
@@ -13,16 +14,6 @@ from core.vault import ENC_SUFFIX, NoAccessError, read_encrypted, unlock, write_
 from utils.logger import get_logger
 
 logger = get_logger("sync_service")
-
-# Image mime types eligible for local download
-IMAGE_MIME_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/gif",
-}
-
 
 # ticket.md frontmatter keys, in order. Contract: docs/AI_CONTEXT_FORMAT.md
 FRONTMATTER_KEYS = (
@@ -41,6 +32,10 @@ class SyncResult:
     message: str = ""
     unchanged: bool = False  # Jira `updated` matched the cache: nothing was fetched or written (F9)
     assets_reused: int = 0  # images kept from the cache because id and size matched (F9)
+    attachments_count: int = 0
+    attachments_cached: int = 0
+    attachments_reused: int = 0
+    attachments_unavailable: int = 0
 
 
 # Jira project keys start with a letter and may contain letters, digits and underscores
@@ -77,9 +72,34 @@ def read_synced_file(issue_key: str, name: str, fernet) -> bytes:
     return read_encrypted(path, fernet)
 
 
-def _sanitize_filename(name: str) -> str:
-    """Sanitizes file names for cross-platform filesystem safety."""
-    return re.sub(r'[\\/*?:"<>|]', "_", name)
+def read_attachment(issue_key: str, filename: str, fernet):
+    """Read a listed cached attachment; legacy caches permit image reads only."""
+    import mimetypes
+
+    key = extract_issue_key(issue_key)
+    name = filename.strip().removeprefix("assets/")
+    if not key or not name or any(c in name for c in ("/", "\\")) or name in {".", ".."}:
+        raise ValueError("Invalid attachment reference; use a filename listed by this ticket.")
+    cached = get_indexed_ticket(key, fernet) or {}
+    records = cached.get("attachments")
+    if records is not None:
+        record = next((r for r in records if r["filename"] == name), None)
+        if record is None or record.get("status") != "cached":
+            raise ValueError("Attachment is not cached; sync the ticket and inspect its attachment status.")
+        mime = record["mime"]
+        original = record["original_filename"]
+    else:
+        mime = mimetypes.guess_type(name)[0]
+        if mime not in IMAGE_MIME_TYPES:
+            raise ValueError("Legacy cache supports images only; sync to include all attachments.")
+        original = name
+    return read_synced_file(key, "assets/" + name, fernet), mime, original
+
+
+def _attachment_details(record: Dict[str, Any]) -> str:
+    original = json.dumps(record.get("original_filename", record["filename"]), ensure_ascii=False)
+    return (f"Original filename: {original}; MIME: {record.get('mime', 'application/octet-stream')}; "
+            f"size: {record.get('size', 'unknown')} bytes; status: {record.get('status', 'cached')}.")
 
 
 def _format_history_markdown(key: str, summary: str, histories: List[Dict[str, Any]]) -> str:
@@ -121,7 +141,7 @@ def _format_history_markdown(key: str, summary: str, histories: List[Dict[str, A
 def _format_ticket_markdown(
     meta: Dict[str, Any],
     desc_md: str,
-    images: List[Dict[str, str]],
+    images: List[Dict[str, Any]],
     other_files: List[Dict[str, Any]],
     relations: Dict[str, Any],
 ) -> str:
@@ -131,7 +151,7 @@ def _format_ticket_markdown(
         "---",
         # JSON scalars are valid YAML (double-quoted strings, flow lists), so every value parses safely
         *(f"{k}: {json.dumps(meta[k], ensure_ascii=False)}" for k in FRONTMATTER_KEYS[:-1]),
-        f"assets_count: {len(images)}",
+        f"assets_count: {sum(img.get('status', 'cached') == 'cached' for img in images)}",
         "---",
         "",
     ]
@@ -144,13 +164,16 @@ def _format_ticket_markdown(
         f"> **Type**: `{meta['type']}` | **Status**: `{meta['status']}` | **Priority**: `{meta['priority']}`  ",
         f"> **Assignee**: {meta['assignee']} | **Reporter**: {meta['reporter']}  ",
         f"> **Last Updated**: {meta['updated']}  ",
-        f"> **Changelog**: Detailed history available at [history.md](history.md)  ",
+        "> **Changelog**: Detailed history available at [history.md](history.md)  ",
         "",
         "## 1. Description & Requirements",
         desc_md,
         "",
     ]
 
+    total = len(images) + len(other_files)
+    cached = sum(item.get("status", "cached") == "cached" for item in images + other_files)
+    body.append(f"Attachments: {total} total; {cached} cached; {total - cached} unavailable.\n")
     # Visual assets
     body.append("## 2. Visual Assets & Screenshots")
     if images:
@@ -158,7 +181,9 @@ def _format_ticket_markdown(
             filename = img["filename"]
             rel_asset_path = f"assets/{filename}"
             body.append(f"### 📷 {filename}")
-            body.append(f"![{filename}]({rel_asset_path})\n")
+            body.append(_attachment_details(img))
+            if img.get("status", "cached") == "cached":
+                body.append(f"![{filename}]({rel_asset_path})\n")
     else:
         body.append("*No image attachments found.*\n")
 
@@ -166,8 +191,9 @@ def _format_ticket_markdown(
     if other_files:
         body.append("## 3. Other Attachments & Documents")
         for f in other_files:
-            size_kb = round(f.get("size", 0) / 1024, 1)
-            body.append(f"- [{f.get('filename')}]({f.get('content')}) ({size_kb} KB)")
+            body.append("- " + _attachment_details(f))
+            if f.get("status", "cached") == "cached":
+                body.append(f"  [{f['filename']}](assets/{f['filename']})")
         body.append("")
 
     # Relationships
@@ -215,7 +241,8 @@ class SyncService:
     ) -> Optional[SyncResult]:
         """The cached result when the ticket is cached and Jira's `updated` (light `fields=updated` request) still matches."""
         cached_updated = cached.get("jira_updated_at")
-        if not (cached_updated and ticket_file.is_file() and history_file.is_file()):
+        if not (cached_updated and ticket_file.is_file() and history_file.is_file()
+                and cache_complete(cached, ticket_file.parent / "assets")):
             return None
         if self.client.get_issue_updated(key) != cached_updated:
             return None
@@ -229,23 +256,9 @@ class SyncService:
             assets_downloaded=cached.get("assets_count", 0),
             message=msg,
             unchanged=True,
+            attachments_count=cached.get("attachments_count", 0),
+            attachments_cached=cached.get("attachments_count", 0),
         )
-
-    def _store_image(
-        self, content_url: str, asset_file: Path, identity: Dict[str, Any], previous: Optional[Dict[str, Any]], fernet
-    ) -> Optional[str]:
-        """Keeps the cached copy when the attachment id and size match it ('reused'), else downloads ('downloaded').
-
-        None when the download failed or was over the size limit.
-        """
-        if identity["id"] and previous == identity and asset_file.is_file():
-            logger.info(f"Asset unchanged, kept from the cache: {asset_file.name}")
-            return "reused"
-        data = self.client.download_attachment(content_url, asset_file.name[: -len(ENC_SUFFIX)])
-        if data is None:
-            return None
-        write_encrypted(asset_file, data, fernet)
-        return "downloaded"
 
     def sync(self, issue_key: str, force: bool = False) -> SyncResult:
         """Syncs one Jira issue. Unless `force`, a cached ticket whose Jira `updated` is unchanged is left as is (F9)."""
@@ -298,50 +311,18 @@ class SyncService:
             assets_dir = ticket_dir / "assets"
             ticket_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Process Attachments (download images, record files)
-            attachments = fields.get("attachment", [])
-            downloaded_images: List[Dict[str, str]] = []
-            other_files: List[Dict[str, Any]] = []
-            # filename -> Jira attachment identity of the cached copy; an identical one is not downloaded again
-            previous_assets: Dict[str, Any] = cached.get("assets", {})
-            asset_identities: Dict[str, Dict[str, Any]] = {}
-            reused = 0
-
-            for att in attachments:
-                filename = _sanitize_filename(att.get("filename", "asset"))
-                mime_type = att.get("mimeType", "").lower()
-                content_url = att.get("content", "")
-
-                if mime_type in IMAGE_MIME_TYPES:
-                    identity = {"id": att.get("id"), "size": att.get("size")}
-                    stored = self._store_image(
-                        content_url, assets_dir / f"{filename}{ENC_SUFFIX}", identity, previous_assets.get(filename), fernet
-                    )
-                    if stored is None:
-                        continue
-                    reused += stored == "reused"
-                    downloaded_images.append({"filename": filename, "mime": mime_type})
-                    asset_identities[filename] = identity
-                else:
-                    other_files.append(att)
-
-            # Purge obsolete assets no longer present in Jira attachments (and plaintext ones from before encryption)
-            valid_asset_names = {
-                _sanitize_filename(att.get("filename", "asset")) + ENC_SUFFIX
-                for att in attachments
-                if att.get("mimeType", "").lower() in IMAGE_MIME_TYPES
-            }
-            if assets_dir.exists():
-                for f in assets_dir.iterdir():
-                    if f.is_file() and f.name not in valid_asset_names:
-                        f.unlink()
-                        logger.info(f"Removed obsolete asset: {f.name}")
-                if not any(assets_dir.iterdir()):
-                    assets_dir.rmdir()
+            # 4. Cache every attachment type; failures remain visible in the manifest.
+            records = sync_attachments(self.client, fields.get("attachment") or [], assets_dir, cached.get("assets", {}), fernet)
+            images = [r for r in records if r["mime"] in IMAGE_MIME_TYPES]
+            downloaded_images = [r for r in images if r["status"] == "cached"]
+            other_files = [r for r in records if r["mime"] not in IMAGE_MIME_TYPES]
+            available = [r for r in records if r["status"] == "cached"]
+            asset_identities = {r["filename"]: {"id": r["id"], "size": r["size"]} for r in available}
+            reused = sum(bool(r.get("reused")) for r in downloaded_images)
 
             # 5. Convert description ADF -> Markdown
             raw_desc = fields.get("description")
-            desc_md = adf_to_markdown(raw_desc)
+            desc_md = link_attachments(adf_to_markdown(raw_desc), records)
 
             # 6. Build and write ticket.md
             meta_dict = {
@@ -367,7 +348,7 @@ class SyncService:
             ticket_md_content = _format_ticket_markdown(
                 meta=meta_dict,
                 desc_md=desc_md,
-                images=downloaded_images,
+                images=images,
                 other_files=other_files,
                 relations=relations,
             )
@@ -403,12 +384,17 @@ class SyncService:
                 "history_path": f"tickets/{key}/history.md{ENC_SUFFIX}",
                 "labels": labels,
                 "assets": asset_identities,
+                "attachment_schema": ATTACHMENT_SCHEMA,
+                "attachments": records,
+                "attachments_count": len(records),
+                "attachments_complete": len(available) == len(records),
             }
             register_ticket(index_meta, fernet)
 
             success_msg = (
                 f"Successfully synced ticket {key} to {ticket_file.relative_to(ticket_dir.parent.parent)} "
                 f"with {len(downloaded_images)} image(s) ({reused} unchanged, not downloaded again) "
+                f"and {len(available)}/{len(records)} attachments cached "
                 f"and {len(histories)} changelog entries."
             )
             logger.info(success_msg)
@@ -420,6 +406,10 @@ class SyncService:
                 assets_downloaded=len(downloaded_images),
                 message=success_msg,
                 assets_reused=reused,
+                attachments_count=len(records),
+                attachments_cached=len(available),
+                attachments_reused=sum(bool(r.get("reused")) for r in available),
+                attachments_unavailable=len(records) - len(available),
             )
 
         except (JiraApiError, NoAccessError) as e:
