@@ -1,6 +1,7 @@
 import base64
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 # Force UTF-8 on Windows console
 if hasattr(sys.stdout, "reconfigure"):
@@ -22,7 +23,7 @@ if __name__ == "__main__":
 from utils.logger import setup_logging, get_logger
 from core.config import format_sources, load_config
 from core.jira_client import JiraClient
-from core.sync_service import IMAGE_MIME_TYPES, SyncService, extract_issue_key, read_synced_file
+from core.sync_service import IMAGE_MIME_TYPES, SyncService, extract_issue_key, read_attachment, read_synced_file
 from core.indexer import list_indexed_tickets
 from core.vault import NoAccessError, unlock
 
@@ -32,14 +33,18 @@ server_logger = get_logger("mcp_server")
 def jira_instructions(prefix: str = "") -> str:
     """MCP server instructions: the only guidance an agent in another repository gets. Keep in sync with AGENTS.md."""
     return (
-        "mcp-jira-sync: read Jira Cloud tickets (requirements, screenshots, change history) so you can work from them.\n"
+        "mcp-jira-sync: read Jira Cloud tickets (requirements, attachments, change history) so you can work from them.\n"
         f"- When the user gives a ticket (PROJ-123 or a /browse/ URL) to read or work on: call {prefix}jira_read_ticket(issue_key) "
         "first. It returns the cached ticket.md (frontmatter, description, image list) and history.md (changelog, newest first).\n"
         f"- Call {prefix}jira_sync_ticket(issue_key) only when the read says it is not synced yet, when the cached copy may be "
         "stale (the user says the ticket changed, or you need its current state), or when the user asks; then read it again. "
-        "A sync of an unchanged ticket costs one small request and replies 'up to date'. "
+        "Sync includes all attachment types within the configured size limit and reports unavailable files. "
+        "A complete unchanged cache costs one small request and replies 'up to date'; legacy or missing files are repaired. "
         "Pass force=true only when the user asks to rebuild the cached copy.\n"
         f"- Look at every screenshot listed under '2. Visual Assets' with {prefix}jira_read_asset(issue_key, filename).\n"
+        f"- Read relevant files under '3. Other Attachments' with {prefix}jira_read_asset; non-images return embedded "
+        "binary resources. Use original filenames, actual content and ticket references to map files to cases/acceptance "
+        "criteria. Names are clues, not proof; report unsupported formats and uncertain mappings.\n"
         "- Then summarize for the user: the goal, every use case and acceptance criterion, edge cases, open questions, "
         "and how the requirements changed. Wait for the user before you implement anything.\n"
         f"- {prefix}jira_list_synced lists tickets already synced.\n"
@@ -55,33 +60,39 @@ def jira_instructions(prefix: str = "") -> str:
 
 
 def jira_sync_ticket(issue_key: str, force: bool = False) -> str:
-    """Fetches a Jira ticket (description as Markdown, image attachments, changelog) into the encrypted local .ai-context/ cache.
+    """Syncs a Jira ticket, changelog and all attachment types into the encrypted local cache, within the configured file size limit.
 
     Read the cached copy with jira_read_ticket first; sync only when it is missing, may be stale, or the user asks.
     An already synced ticket whose Jira 'updated' time is unchanged is not fetched again (the reply says 'up to date'),
-    and unchanged images are never downloaded again.
+    and unchanged attachments are not downloaded again. Legacy image-only, missing or incomplete caches are repaired.
 
     Args:
         issue_key: Jira issue key, e.g. 'PROJ-123', or a full Jira /browse/ URL.
-        force: true skips the 'up to date' check and always refetches the ticket (unchanged images are still reused).
+        force: true skips the 'up to date' check and always refetches the ticket (unchanged attachments are still reused).
 
     Returns:
-        A summary. Read the content with jira_read_ticket.
+        Image/attachment counts and an explicit warning for unavailable files. Read contents with jira_read_ticket and jira_read_asset.
     """
     server_logger.info(f"MCP tool call: jira_sync_ticket('{issue_key}', force={bool(force)})")
     service = SyncService()
     result = service.sync(issue_key, force=bool(force))
+    attachments = (f"- Attachments: {result.attachments_count} total, {result.attachments_cached} cached, "
+                   f"{result.attachments_unavailable} unavailable ({result.attachments_reused} reused).\n")
 
     if result.success and result.unchanged:
         return (
             f"✅ Ticket {result.key} is up to date (unchanged in Jira since the last sync; nothing downloaded).\n"
             f"- Images: {result.assets_downloaded}\n"
+            f"{attachments}"
             f"Next: call jira_read_ticket('{result.key}') to read it."
         )
     if result.success:
+        warning = "Warning: attachment sync is incomplete; inspect ticket attachment statuses.\n" if result.attachments_unavailable else ""
         return (
             f"✅ Ticket {result.key} synchronized (encrypted in .ai-context/).\n"
             f"- Images: {result.assets_downloaded} ({result.assets_reused} unchanged, not downloaded again)\n"
+            f"{attachments}"
+            f"{warning}"
             f"Next: call jira_read_ticket('{result.key}') to read it."
         )
     else:
@@ -104,31 +115,30 @@ def jira_read_ticket(issue_key: str) -> str:
         return f"❌ {e}"
     key = extract_issue_key(issue_key)
     return (
-        f"✅ {key}: ticket.md then history.md. Images 'assets/<file>' open with jira_read_asset('{key}', '<file>').\n\n"
+        f"✅ {key}: ticket.md then history.md. Attachments 'assets/<file>' open with jira_read_asset('{key}', '<file>').\n\n"
         f"{ticket}\n\n---\n\n{history}"
     )
 
 
 def jira_read_asset(issue_key: str, filename: str):
-    """Returns one decrypted image attachment of a synced ticket (the file names are listed in ticket.md, '2. Visual Assets').
+    """Reads one cached attachment: an image block for images, or an embedded binary resource for other files.
 
     Args:
         issue_key: Jira issue key, e.g. 'PROJ-123'.
-        filename: Image file name as written in ticket.md, e.g. 'login.png' (an 'assets/' prefix is accepted).
+        filename: Cached filename listed in ticket.md (an 'assets/' prefix is accepted). Original filename and MIME accompany document resources.
     """
-    from mcp.types import ImageContent
+    from mcp.types import ImageContent, EmbeddedResource, BlobResourceContents
 
     server_logger.info(f"MCP tool call: jira_read_asset('{issue_key}', '{filename}')")
-    name = filename.strip().removeprefix("assets/")
-    ext = name.rsplit(".", 1)[-1].lower()
-    mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
-    if "." not in name or mime not in IMAGE_MIME_TYPES:
-        return f"❌ Not an image attachment: '{filename}'."
     try:
-        data = read_synced_file(issue_key, f"assets/{name}", unlock(load_config()))
+        data, mime, original = read_attachment(issue_key, filename, unlock(load_config()))
     except (NoAccessError, ValueError, FileNotFoundError) as e:
         return f"❌ {e}"
-    return ImageContent(type="image", data=base64.b64encode(data).decode("ascii"), mimeType=mime)
+    encoded = base64.b64encode(data).decode("ascii")
+    if mime in IMAGE_MIME_TYPES:
+        return ImageContent(type="image", data=encoded, mimeType="image/jpeg" if mime == "image/jpg" else mime)
+    uri = f"jira-attachment://{extract_issue_key(issue_key)}/{quote(original, safe='')}"
+    return EmbeddedResource(type="resource", resource=BlobResourceContents(uri=uri, mimeType=mime, blob=encoded))
 
 
 def jira_list_synced() -> str:

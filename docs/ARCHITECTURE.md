@@ -45,6 +45,8 @@ flowchart TD
 
 ## 2. Sync pipeline (`SyncService.sync`)
 
+Attachment persistence is delegated to core/attachments.py: every file type is attempted under the existing size limit, original/cached names and status are recorded, and incomplete or old manifests disable the unchanged shortcut. The vault still owns all encryption. See [attachments](ATTACHMENTS.md).
+
 ```mermaid
 sequenceDiagram
     participant C as Caller (tool / CLI)
